@@ -667,13 +667,14 @@ var INK_TOOLS = {
   hl:  { color: '#f5c842', w: 0.024, alpha: 0.4 }
 };
 
-/* Global preferences, persisted across sessions */
-var prefs = { penColor: '#3b82f6', penOnly: false, darkPage: false };
+/* Global preferences, persisted across sessions. Pencil-only defaults ON:
+   pens (Apple Pencil, Windows pen) and the mouse draw; fingers scroll. */
+var prefs = { penColor: '#3b82f6', penOnly: true, darkPage: false };
 try {
   var storedPrefs = JSON.parse(localStorage.getItem('lecturescribe_prefs') || '{}');
   if (typeof storedPrefs.penColor === 'string') prefs.penColor = storedPrefs.penColor;
-  prefs.penOnly = !!storedPrefs.penOnly;
-  prefs.darkPage = !!storedPrefs.darkPage;
+  if ('penOnly' in storedPrefs) prefs.penOnly = !!storedPrefs.penOnly;
+  if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
 } catch (e) {}
 function savePrefs() {
   try { localStorage.setItem('lecturescribe_prefs', JSON.stringify(prefs)); } catch (e) {}
@@ -791,6 +792,55 @@ DocViewer.prototype._bindGestures = function () {
   };
   el.addEventListener('pointerup', end, true);
   el.addEventListener('pointercancel', end, true);
+
+  /* Swipe page turning (no ink tool active): swipe left = next page,
+     swipe right = previous. A vertical swipe flips only when the page edge
+     was already reached when the gesture began, so a zoomed page scrolls
+     normally first. */
+  var swipe = null;
+  el.addEventListener('pointerdown', function (e) {
+    if (!self.pdf || self.tool || pinching || Object.keys(touches).length > 1) { swipe = null; return; }
+    swipe = {
+      x: e.clientX, y: e.clientY,
+      atTop: el.scrollTop <= 2,
+      atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
+      atLeft: el.scrollLeft <= 2,
+      atRight: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
+    };
+  }, true);
+  el.addEventListener('pointerup', function (e) {
+    if (!swipe || pinching) { swipe = null; return; }
+    var dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+    var s = swipe;
+    swipe = null;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) {
+      if (dx < 0 && s.atRight) self.goto(self.page + 1, false);
+      else if (dx > 0 && s.atLeft) self.goto(self.page - 1, false);
+    } else if (Math.abs(dy) > 60 && Math.abs(dy) > 2 * Math.abs(dx)) {
+      if (dy < 0 && s.atBottom) self.goto(self.page + 1, false);
+      else if (dy > 0 && s.atTop) self.goto(self.page - 1, false);
+    }
+  }, true);
+
+  /* Mouse wheel / trackpad on PC: scrolling past the page edge turns the
+     page, with a cooldown so one scroll gesture flips one page. */
+  var wheelCooldown = 0;
+  el.addEventListener('wheel', function (e) {
+    if (!self.pdf) return;
+    var now = Date.now();
+    if (now < wheelCooldown) return;
+    var atTop = el.scrollTop <= 2;
+    var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+    if (e.deltaY > 20 && atBottom && self.page < self.numPages) {
+      wheelCooldown = now + 700;
+      self.goto(self.page + 1, false);
+      e.preventDefault();
+    } else if (e.deltaY < -20 && atTop && self.page > 1) {
+      wheelCooldown = now + 700;
+      self.goto(self.page - 1, false);
+      e.preventDefault();
+    }
+  }, { passive: false });
 };
 
 /* Extracts each page's text once (lazily) and searches it. */
@@ -906,12 +956,17 @@ DocViewer.prototype._pointerMove = function (e) {
   if (this._erasing) { this._eraseAt(this._norm(e)); return; }
   if (!this._stroke) return;
   e.preventDefault();
-  var pt = this._norm(e);
-  var pts = this._stroke.points;
-  var last = pts[pts.length - 1];
-  if (Math.abs(pt[0] - last[0]) + Math.abs(pt[1] - last[1]) < 0.0025) return;
-  pts.push(pt);
-  this._drawSegment(this._stroke, last, pt);
+  // pens report far more samples than the browser delivers per frame;
+  // coalesced events recover them, which is what makes handwriting smooth
+  var events = (e.getCoalescedEvents && e.getCoalescedEvents().length) ? e.getCoalescedEvents() : [e];
+  for (var i = 0; i < events.length; i++) {
+    var pt = this._norm(events[i]);
+    var pts = this._stroke.points;
+    var last = pts[pts.length - 1];
+    if (Math.abs(pt[0] - last[0]) + Math.abs(pt[1] - last[1]) < 0.0015) continue;
+    pts.push(pt);
+    this._drawSegment(this._stroke, last, pt);
+  }
 };
 DocViewer.prototype._pointerUp = function () {
   if (this._stroke) {
@@ -987,14 +1042,27 @@ DocViewer.prototype.drawInk = function () {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(stroke.points[0][0] * ic.width, stroke.points[0][1] * ic.height);
-    for (var j = 1; j < stroke.points.length; j++) {
-      ctx.lineTo(stroke.points[j][0] * ic.width, stroke.points[j][1] * ic.height);
-    }
+    traceSmoothPath(ctx, stroke.points, ic.width, ic.height);
     ctx.stroke();
     ctx.restore();
   }
 };
+
+/* Draws a stroke as quadratic curves through segment midpoints - the
+   standard trick that turns jagged point-to-point lines into smooth ink. */
+function traceSmoothPath(ctx, pts, W, H) {
+  ctx.moveTo(pts[0][0] * W, pts[0][1] * H);
+  if (pts.length < 3) {
+    ctx.lineTo(pts[pts.length - 1][0] * W, pts[pts.length - 1][1] * H);
+    return;
+  }
+  for (var i = 1; i < pts.length - 1; i++) {
+    var mx = (pts[i][0] + pts[i + 1][0]) / 2 * W;
+    var my = (pts[i][1] + pts[i + 1][1]) / 2 * H;
+    ctx.quadraticCurveTo(pts[i][0] * W, pts[i][1] * H, mx, my);
+  }
+  ctx.lineTo(pts[pts.length - 1][0] * W, pts[pts.length - 1][1] * H);
+}
 DocViewer.prototype.load = function (blob, name) {
   var self = this;
   self.blob = blob;
@@ -1880,9 +1948,18 @@ function exportMarkedPdf() {
       ink[k].forEach(function (stroke) {
         var cfg = INK_TOOLS[stroke.tool];
         if (!cfg || !stroke.points || stroke.points.length < 2) return;
-        var d = 'M ' + (stroke.points[0][0] * w).toFixed(2) + ' ' + (stroke.points[0][1] * h).toFixed(2);
-        for (var i = 1; i < stroke.points.length; i++) {
-          d += ' L ' + (stroke.points[i][0] * w).toFixed(2) + ' ' + (stroke.points[i][1] * h).toFixed(2);
+        var pts = stroke.points;
+        var d = 'M ' + (pts[0][0] * w).toFixed(2) + ' ' + (pts[0][1] * h).toFixed(2);
+        if (pts.length < 3) {
+          d += ' L ' + (pts[pts.length - 1][0] * w).toFixed(2) + ' ' + (pts[pts.length - 1][1] * h).toFixed(2);
+        } else {
+          // same midpoint smoothing as the on-screen ink
+          for (var i = 1; i < pts.length - 1; i++) {
+            d += ' Q ' + (pts[i][0] * w).toFixed(2) + ' ' + (pts[i][1] * h).toFixed(2) +
+              ' ' + ((pts[i][0] + pts[i + 1][0]) / 2 * w).toFixed(2) +
+              ' ' + ((pts[i][1] + pts[i + 1][1]) / 2 * h).toFixed(2);
+          }
+          d += ' L ' + (pts[pts.length - 1][0] * w).toFixed(2) + ' ' + (pts[pts.length - 1][1] * h).toFixed(2);
         }
         // y = page height puts the SVG-style top-left origin where our
         // normalized coordinates expect it
