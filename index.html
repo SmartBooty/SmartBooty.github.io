@@ -189,12 +189,16 @@
   .doc-placeholder .hint { font-size: 14px; margin-top: 10px; }
   .doc-embed { width: 100%; height: 100%; min-height: 300px; border: none; border-radius: 0 0 14px 14px; }
 
+  html, body { overscroll-behavior: none; }
   .canvas-wrap { position: relative; display: inline-block; }
   .canvas-wrap canvas.ink {
     position: absolute; left: 0; top: 0;
     background: transparent;
     touch-action: none;
     cursor: crosshair;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
   }
   .canvas-wrap canvas.ink.inactive { pointer-events: none; cursor: default; }
   .ink-toolbar {
@@ -712,6 +716,8 @@ function DocViewer(ids) {
   this._stroke = null;
   this._erasing = false;
   this._pan = null;
+  this._maybePan = null;
+  this._stylusActive = false;
   this._textPromise = null;
   this._renderSeq = 0;
   var self = this;
@@ -921,6 +927,30 @@ DocViewer.prototype._bindInk = function () {
   ic.addEventListener('pointermove', function (e) { self._pointerMove(e); });
   ic.addEventListener('pointerup', function (e) { self._pointerUp(e); });
   ic.addEventListener('pointercancel', function (e) { self._pointerUp(e); });
+
+  /* iPadOS: the Apple Pencil announces itself through touch events as
+     touchType 'stylus' (some browsers report its pointer events as plain
+     'touch'). Also, preventing default touch behavior on the ink layer while
+     a tool is active is what stops the page from scrolling mid-stroke and
+     removes the double-tap-to-zoom delay between strokes. */
+  ic.addEventListener('touchstart', function (e) {
+    for (var i = 0; i < e.changedTouches.length; i++) {
+      if (e.changedTouches[i].touchType === 'stylus') self._stylusActive = true;
+    }
+    if (self.tool) e.preventDefault();
+  }, { passive: false });
+  ic.addEventListener('touchmove', function (e) {
+    if (self.tool) e.preventDefault();
+  }, { passive: false });
+  var touchDone = function (e) {
+    var stylus = false;
+    for (var i = 0; i < e.touches.length; i++) {
+      if (e.touches[i].touchType === 'stylus') stylus = true;
+    }
+    self._stylusActive = stylus;
+  };
+  ic.addEventListener('touchend', touchDone);
+  ic.addEventListener('touchcancel', touchDone);
 };
 DocViewer.prototype._norm = function (e) {
   var r = this.els.ink.getBoundingClientRect();
@@ -929,16 +959,7 @@ DocViewer.prototype._norm = function (e) {
     Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))
   ];
 };
-DocViewer.prototype._pointerDown = function (e) {
-  if (!this.tool || !this.pdf || !this.inkStore) return;
-  e.preventDefault();
-  try { this.els.ink.setPointerCapture(e.pointerId); } catch (err) {}
-  if (prefs.penOnly && e.pointerType === 'touch') {
-    // pencil-only mode: fingers pan the page instead of drawing
-    this._pan = { x: e.clientX, y: e.clientY, sl: this.els.scroll.scrollLeft, st: this.els.scroll.scrollTop };
-    return;
-  }
-  var pt = this._norm(e);
+DocViewer.prototype._beginStroke = function (pt) {
   if (this.tool === 'erase') {
     this._erasing = true;
     this._eraseAt(pt);
@@ -947,7 +968,34 @@ DocViewer.prototype._pointerDown = function (e) {
     if (this.tool === 'pen') this._stroke.color = prefs.penColor;
   }
 };
+DocViewer.prototype._pointerDown = function (e) {
+  if (!this.tool || !this.pdf || !this.inkStore) return;
+  e.preventDefault();
+  try { this.els.ink.setPointerCapture(e.pointerId); } catch (err) {}
+  var pt = this._norm(e);
+  var penLike = e.pointerType === 'pen' || e.pointerType === 'mouse' || this._stylusActive;
+  if (prefs.penOnly && !penLike) {
+    // Could be a finger (should pan) - or the Apple Pencil in a browser that
+    // reports it as a plain touch, where the stylus signal arrives just after
+    // this event. Defer the draw-vs-pan decision to the first movement.
+    this._maybePan = {
+      x: e.clientX, y: e.clientY, pt: pt,
+      sl: this.els.scroll.scrollLeft, st: this.els.scroll.scrollTop
+    };
+    return;
+  }
+  this._beginStroke(pt);
+};
 DocViewer.prototype._pointerMove = function (e) {
+  if (this._maybePan) {
+    var m = this._maybePan;
+    this._maybePan = null;
+    if (this._stylusActive) {
+      this._beginStroke(m.pt); // it was the Pencil after all
+    } else {
+      this._pan = { x: m.x, y: m.y, sl: m.sl, st: m.st };
+    }
+  }
   if (this._pan) {
     this.els.scroll.scrollLeft = this._pan.sl - (e.clientX - this._pan.x);
     this.els.scroll.scrollTop = this._pan.st - (e.clientY - this._pan.y);
@@ -979,6 +1027,7 @@ DocViewer.prototype._pointerUp = function () {
   }
   this._erasing = false;
   this._pan = null;
+  this._maybePan = null;
 };
 DocViewer.prototype._eraseAt = function (pt) {
   var arr = this._strokes();
