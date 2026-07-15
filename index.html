@@ -153,6 +153,7 @@
     max-width: 100%;
   }
   .pane.doc { flex: 1.3 1 400px; }
+  .pane.doc.doczoomed { flex-basis: 100%; max-height: 86vh; }
   .pane-head {
     display: flex;
     align-items: center;
@@ -351,6 +352,11 @@
   <div class="notice hidden" id="micNotice">
     <strong>Microphone blocked.</strong> Allow microphone access for this page in your
     browser settings, then reload.
+  </div>
+  <div class="notice hidden" id="recoverNotice">
+    <strong>Recovered.</strong> Your last recording was interrupted mid-class (page refreshed,
+    closed, or crashed), but autosave caught it. Look for the <b>&quot;Recovered&hellip;&quot;</b> entry in
+    your recordings below &mdash; at most the last few seconds are missing.
   </div>
 
   <!-- ============ HOME ============ -->
@@ -609,7 +615,7 @@ function esc(s) {
 }
 
 /* ================= IndexedDB ================= */
-var DB_NAME = 'lecturescribe', DB_VER = 1, db = null;
+var DB_NAME = 'lecturescribe', DB_VER = 2, db = null;
 function openDB() {
   return new Promise(function (resolve, reject) {
     var req = indexedDB.open(DB_NAME, DB_VER);
@@ -618,9 +624,88 @@ function openDB() {
       if (!d.objectStoreNames.contains('sessions')) {
         d.createObjectStore('sessions', { keyPath: 'id' });
       }
+      if (!d.objectStoreNames.contains('live')) {
+        // crash-proof autosave for the recording in progress
+        d.createObjectStore('live', { keyPath: 'k' });
+      }
     };
     req.onsuccess = function (e) { db = e.target.result; resolve(db); };
     req.onerror = function () { reject(req.error); };
+  });
+}
+
+/* ---- live autosave: bank the in-progress recording so an accidental
+   refresh, tab kill, or crash can never lose a lecture ---- */
+function livePut(row) {
+  try { db.transaction('live', 'readwrite').objectStore('live').put(row); } catch (e) {}
+}
+function liveClear() {
+  return new Promise(function (resolve) {
+    try {
+      var tx = db.transaction('live', 'readwrite');
+      tx.objectStore('live').clear();
+      tx.oncomplete = resolve;
+      tx.onerror = resolve;
+    } catch (e) { resolve(); }
+  });
+}
+function liveAll() {
+  return new Promise(function (resolve) {
+    try {
+      var req = db.transaction('live', 'readonly').objectStore('live').getAll();
+      req.onsuccess = function () { resolve(req.result || []); };
+      req.onerror = function () { resolve([]); };
+    } catch (e) { resolve([]); }
+  });
+}
+function liveMetaFlush() {
+  if (!rec.running) return;
+  var notes = rec.notes.slice();
+  if (pendingNote && pendingNote.t !== null) {
+    var body = pendingNote.el.querySelector('.body');
+    if (body && body.textContent.trim() !== '') {
+      notes.push({ t: pendingNote.t, text: body.textContent, page: pendingNote.page });
+    }
+  }
+  livePut({
+    k: 'meta',
+    created: rec.sessionCreated,
+    mime: rec.mime,
+    duration: elapsedNow(),
+    transcript: rec.transcript,
+    notes: notes,
+    pageMarks: rec.pageMarks,
+    ink: rec.ink,
+    flags: rec.flags
+  });
+}
+function recoverLiveSession() {
+  return liveAll().then(function (rows) {
+    if (!rows.length) return false;
+    var meta = null, docRec = null, chunks = [];
+    rows.forEach(function (r) {
+      if (r.k === 'meta') meta = r;
+      else if (r.k === 'doc') docRec = r;
+      else if (r.k.indexOf('chunk_') === 0) chunks.push(r);
+    });
+    if (!meta || !chunks.length) return liveClear().then(function () { return false; });
+    chunks.sort(function (a, b) { return parseInt(a.k.substring(6), 10) - parseInt(b.k.substring(6), 10); });
+    var created = meta.created || 1;
+    var session = {
+      id: 's' + created,
+      name: 'Recovered ' + new Date(created).toLocaleString(),
+      created: created,
+      duration: meta.duration || 0,
+      mime: meta.mime || 'audio/webm',
+      audio: new Blob(chunks.map(function (c) { return c.data; }), { type: meta.mime || 'audio/webm' }),
+      transcript: meta.transcript || [],
+      notes: meta.notes || [],
+      pageMarks: meta.pageMarks || [],
+      ink: meta.ink || {},
+      flags: meta.flags || [],
+      doc: docRec ? { name: docRec.name, blob: docRec.blob, pages: docRec.pages } : null
+    };
+    return dbPut(session).then(liveClear).then(function () { return true; });
   });
 }
 function dbPut(session) {
@@ -1154,6 +1239,12 @@ DocViewer.prototype.render = function () {
   if (!self.pdf) return Promise.resolve();
   var seq = ++self._renderSeq;
   self.updateInd();
+  // zooming in gives the document the full row width; back at 1x the
+  // normal three-pane layout returns
+  var pane = self.els.scroll.parentElement;
+  if (pane && pane.classList.contains('doc')) {
+    pane.classList.toggle('doczoomed', self.zoom > 1.01);
+  }
   return self.pdf.getPage(self.page).then(function (page) {
     if (seq !== self._renderSeq) return;
     var cssW = Math.max(200, self.els.scroll.clientWidth - 24) * self.zoom;
@@ -1195,6 +1286,8 @@ DocViewer.prototype.reset = function () {
   this._textPromise = null;
   this.setTool(null);
   this._renderSeq++;
+  var pane = this.els.scroll.parentElement;
+  if (pane) pane.classList.remove('doczoomed');
   this.els.wrap.classList.add('hidden');
   this.els.inkBar.classList.add('hidden');
   this.els.nav.classList.add('hidden');
@@ -1262,6 +1355,9 @@ var rec = {
   pageMarks: [],      // {t: seconds, page}
   ink: {},            // {"p<page>": [stroke, ...]}
   flags: [],          // {t: seconds, page} - "on the exam" moments
+  sessionCreated: 0,
+  chunkSeq: 0,
+  autosaveId: null,
   recognition: null,
   speechOK: false,
   interimT: null
@@ -1277,8 +1373,9 @@ function addPageMark(page) {
   var t = elapsedNow();
   var last = rec.pageMarks[rec.pageMarks.length - 1];
   if (last && last.page === page) return;
-  if (last && t - last.t < 2) { last.page = page; last.t = t; return; } // rapid flipping: keep the page she lands on
+  if (last && t - last.t < 2) { last.page = page; last.t = t; liveMetaFlush(); return; } // rapid flipping: keep the page she lands on
   rec.pageMarks.push({ t: t, page: page });
+  liveMetaFlush();
 }
 
 recViewer.onPageChange = function (page) {
@@ -1332,12 +1429,28 @@ function beginRecording() {
     rec.paused = false;
     rec.running = true;
     rec.startWall = Date.now();
+    rec.sessionCreated = Date.now();
+    rec.chunkSeq = 0;
     rec.mime = pickMime();
 
     var opts = rec.mime ? { mimeType: rec.mime } : undefined;
     rec.mediaRecorder = new MediaRecorder(stream, opts);
-    rec.mediaRecorder.ondataavailable = function (e) { if (e.data && e.data.size > 0) rec.chunks.push(e.data); };
+    rec.mediaRecorder.ondataavailable = function (e) {
+      if (e.data && e.data.size > 0) {
+        rec.chunks.push(e.data);
+        // bank every chunk immediately: a refresh or crash loses at most ~2s
+        livePut({ k: 'chunk_' + (rec.chunkSeq++), data: e.data });
+      }
+    };
     rec.mediaRecorder.start(2000); // gather chunks every 2s so a crash loses almost nothing
+
+    liveClear().then(function () {
+      if (recViewer.pdf) {
+        livePut({ k: 'doc', name: recViewer.name, blob: recViewer.blob, pages: recViewer.numPages });
+      }
+      liveMetaFlush();
+    });
+    rec.autosaveId = setInterval(liveMetaFlush, 8000);
 
     if (recViewer.pdf) rec.pageMarks.push({ t: 0, page: recViewer.page });
 
@@ -1416,6 +1529,7 @@ function stopRecording() {
   if (!rec.paused) rec.elapsedBase += (Date.now() - rec.startWall) / 1000;
   rec.running = false;
   clearInterval(rec.timerId);
+  clearInterval(rec.autosaveId);
   stopSpeech();
   commitPendingNote();
 
@@ -1444,6 +1558,7 @@ function stopRecording() {
       doc: recViewer.pdf ? { name: recViewer.name, blob: recViewer.blob, pages: recViewer.numPages } : null
     };
     dbPut(session).then(function () {
+      liveClear(); // recording is safely saved; drop the crash-recovery copy
       openSession(session.id);
     }).catch(function (err) {
       console.error('save failed', err);
@@ -1611,6 +1726,7 @@ function commitPendingNote() {
       page: pendingNote.page
     });
     body.setAttribute('contenteditable', 'false');
+    liveMetaFlush();
   } else {
     pendingNote.el.remove();
   }
@@ -2140,7 +2256,10 @@ $('recDocFile').addEventListener('change', function () {
   var f = $('recDocFile').files[0];
   if (!f) return;
   recViewer.load(f, f.name).then(function () {
-    if (rec.running) addPageMark(recViewer.page);
+    if (rec.running) {
+      addPageMark(recViewer.page);
+      livePut({ k: 'doc', name: f.name, blob: f, pages: recViewer.numPages });
+    }
     updateRecStatus();
   }).catch(function (err) {
     console.error(err);
@@ -2194,6 +2313,13 @@ $('flagBtn').addEventListener('click', function () {
   var b = $('flagBtn');
   b.textContent = 'Flagged ✓';
   setTimeout(function () { b.innerHTML = '&#9733; On the exam'; }, 1200);
+  liveMetaFlush();
+});
+
+document.addEventListener('visibilitychange', function () {
+  // bank everything the instant the tab goes to the background - iPads
+  // are quick to kill background tabs
+  if (document.visibilityState === 'hidden' && rec.running) liveMetaFlush();
 });
 $('homeBtn').addEventListener('click', function () {
   if (rec.running) {
@@ -2251,7 +2377,14 @@ window.addEventListener('beforeunload', function (e) {
 });
 
 /* ================= boot ================= */
+try {
+  // ask the browser to protect this site's storage from cleanup eviction
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+} catch (e) {}
 openDB().then(function () {
+  return recoverLiveSession();
+}).then(function (recovered) {
+  if (recovered) $('recoverNotice').classList.remove('hidden');
   renderHome();
   showView('home');
 }).catch(function (err) {
