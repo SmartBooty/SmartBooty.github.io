@@ -139,6 +139,13 @@
   .rec-dot.paused { animation: none; background: var(--orange); }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
 
+  .mic-meter {
+    display: inline-block; width: 64px; height: 10px;
+    background: var(--deep); border: 1px solid var(--shell-border);
+    border-radius: 6px; vertical-align: middle; margin-left: 10px; overflow: hidden;
+  }
+  .mic-meter span { display: block; height: 100%; width: 0%; background: var(--green); transition: width 80ms linear; }
+
   .panes { display: flex; gap: 14px; flex: 1; min-height: 0; flex-wrap: wrap; align-items: stretch; }
   .pane {
     flex: 1 1 340px;
@@ -368,8 +375,12 @@
         <h2 style="font-size:21px; margin-bottom:4px;">Your recordings</h2>
         <div style="color:var(--muted); font-size:15px;">Saved on this device. Use <b>Export study session</b> on a recording to get the file you upload for Claude study sessions.</div>
       </div>
-      <button class="btn red big" id="newRecBtn">&#9679; New recording</button>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn ghost" id="importBtn">Import backup</button>
+        <button class="btn red big" id="newRecBtn">&#9679; New recording</button>
+      </div>
     </div>
+    <input type="file" id="importFile" accept=".notehub" class="hidden">
     <div class="card">
       <input class="home-search" id="homeSearch" type="search"
         placeholder="Search every recording &mdash; what he said, your notes&hellip;">
@@ -383,7 +394,7 @@
   <div id="recordView" class="hidden" style="display:flex; flex-direction:column; flex:1;">
     <div class="card">
       <div class="controls">
-        <span class="timer"><span class="rec-dot hidden" id="recDot"></span><span id="recTimer">00:00</span></span>
+        <span class="timer"><span class="rec-dot hidden" id="recDot"></span><span id="recTimer">00:00</span><span class="mic-meter hidden" id="micMeter" title="Microphone level - if this moves, it hears him"><span id="micLevel"></span></span></span>
         <button class="btn red big" id="startBtn">&#9679; Start recording</button>
         <button class="btn flag-btn big hidden" id="flagBtn" title="Stamp this moment: professor said it will be on the exam">&#9733; On the exam</button>
         <button class="btn gold hidden" id="pauseBtn">Pause</button>
@@ -458,8 +469,9 @@
   <div id="playView" class="hidden" style="display:flex; flex-direction:column; flex:1;">
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-        <h2 style="font-size:21px;"><span id="playTitle" contenteditable="true" spellcheck="false" style="outline:none; border-bottom:1px dashed var(--shell-border);"></span></h2>
+        <h2 style="font-size:21px;"><span id="playTitle" contenteditable="true" spellcheck="false" style="outline:none; border-bottom:1px dashed var(--shell-border);"></span> <span style="color:var(--muted); font-size:15px;" title="Tap the name to rename">&#9998;</span></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn ghost small" id="backupBtn">Back up (.notehub)</button>
           <button class="btn ghost small" id="exportAudioBtn">Download audio</button>
           <button class="btn ghost small hidden" id="exportPdfBtn">Download marked-up PDF</button>
           <button class="btn ghost small" id="copyTextBtn">Copy study session</button>
@@ -1470,6 +1482,58 @@ recViewer.onPageChange = function (page) {
   if (rec.running) addPageMark(page);
 };
 
+/* ---- keep the screen awake while recording (screen lock suspends web
+   recording on iPads) and show a live mic level so she can SEE that the
+   professor is being picked up ---- */
+var wakeLock = null;
+function acquireWakeLock() {
+  try {
+    if (navigator.wakeLock && navigator.wakeLock.request) {
+      navigator.wakeLock.request('screen').then(function (wl) {
+        wakeLock = wl;
+        wl.addEventListener('release', function () { wakeLock = null; });
+      }, function () {});
+    }
+  } catch (e) {}
+}
+function releaseWakeLock() {
+  if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+}
+
+var meter = { ctx: null, analyser: null, timer: null };
+function startMeter(stream) {
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    meter.ctx = new AC();
+    if (meter.ctx.state === 'suspended') meter.ctx.resume();
+    var src = meter.ctx.createMediaStreamSource(stream);
+    meter.analyser = meter.ctx.createAnalyser();
+    meter.analyser.fftSize = 256;
+    src.connect(meter.analyser);
+    var data = new Uint8Array(meter.analyser.fftSize);
+    $('micMeter').classList.remove('hidden');
+    meter.timer = setInterval(function () {
+      meter.analyser.getByteTimeDomainData(data);
+      var sum = 0;
+      for (var i = 0; i < data.length; i++) {
+        var d = data[i] - 128;
+        sum += d * d;
+      }
+      var rms = Math.sqrt(sum / data.length) / 128;
+      $('micLevel').style.width = Math.min(100, Math.round(rms * 400)) + '%';
+    }, 100);
+  } catch (e) {}
+}
+function stopMeter() {
+  clearInterval(meter.timer);
+  meter.timer = null;
+  if (meter.ctx) { try { meter.ctx.close(); } catch (e) {} meter.ctx = null; }
+  meter.analyser = null;
+  $('micMeter').classList.add('hidden');
+  $('micLevel').style.width = '0%';
+}
+
 function pickMime() {
   var candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
   for (var i = 0; i < candidates.length; i++) {
@@ -1548,6 +1612,8 @@ function beginRecording() {
     $('flagBtn').classList.remove('hidden');
     $('pauseBtn').classList.remove('hidden');
     $('stopBtn').classList.remove('hidden');
+    acquireWakeLock();
+    startMeter(stream);
     startSpeech();
     updateRecStatus();
 
@@ -1618,6 +1684,8 @@ function stopRecording() {
   rec.running = false;
   clearInterval(rec.timerId);
   clearInterval(rec.autosaveId);
+  releaseWakeLock();
+  stopMeter();
   stopSpeech();
   commitPendingNote();
 
@@ -1857,9 +1925,18 @@ function renderHome() {
         '<div><div class="name">' + esc(s.name) + '</div>' +
         '<div class="meta">' + meta + '</div></div>' +
         '<div class="actions"><button class="btn blue small">Open</button>' +
+        '<button class="btn ghost small">Rename</button>' +
         '<button class="btn red small">Delete</button></div>';
       row.querySelector('.name').addEventListener('click', function () { openSession(s.id); });
       row.querySelector('.btn.blue').addEventListener('click', function () { openSession(s.id); });
+      row.querySelector('.btn.ghost').addEventListener('click', function () {
+        var newName = prompt('Rename this recording:', s.name);
+        if (newName === null) return;
+        newName = newName.trim();
+        if (!newName || newName === s.name) return;
+        s.name = newName;
+        dbPut(s).then(renderHome);
+      });
       row.querySelector('.btn.red').addEventListener('click', function () {
         if (confirm('Delete "' + s.name + '"? This cannot be undone.')) {
           dbDelete(s.id).then(renderHome);
@@ -2172,6 +2249,68 @@ function exportText() {
   download(new Blob([buildStudyMarkdown(s)], { type: 'text/markdown' }), safeName(s.name) + '.md');
 }
 
+/* ---- full-session backup: one .notehub file holding audio, transcript,
+   notes, ink, flags, page timing, and the attached PDF. Binary layout:
+   8-byte header (magic + JSON length), JSON metadata, audio bytes, doc bytes. */
+var NHB_MAGIC = 0x4e484231; // "NHB1"
+function exportBackup() {
+  var s = play.session; if (!s) return;
+  var meta = {
+    notehub_backup: 1,
+    name: s.name, created: s.created, duration: s.duration, mime: s.mime,
+    transcript: s.transcript || [], notes: s.notes || [],
+    pageMarks: s.pageMarks || [], ink: s.ink || {}, flags: s.flags || [],
+    audioSize: s.audio.size,
+    doc: s.doc ? { name: s.doc.name, pages: s.doc.pages, size: s.doc.blob.size } : null
+  };
+  var metaBytes = new TextEncoder().encode(JSON.stringify(meta));
+  var header = new ArrayBuffer(8);
+  var dv = new DataView(header);
+  dv.setUint32(0, NHB_MAGIC);
+  dv.setUint32(4, metaBytes.length);
+  var parts = [header, metaBytes, s.audio];
+  if (s.doc) parts.push(s.doc.blob);
+  download(new Blob(parts, { type: 'application/octet-stream' }), safeName(s.name) + '.notehub');
+}
+
+function importBackup(file) {
+  file.slice(0, 8).arrayBuffer().then(function (buf) {
+    var dv = new DataView(buf);
+    if (dv.getUint32(0) !== NHB_MAGIC) throw new Error('not a NoteHub backup file');
+    var mlen = dv.getUint32(4);
+    return file.slice(8, 8 + mlen).text().then(function (mjson) {
+      var meta = JSON.parse(mjson);
+      var off = 8 + mlen;
+      var audio = file.slice(off, off + meta.audioSize, meta.mime || 'audio/webm');
+      off += meta.audioSize;
+      var doc = null;
+      if (meta.doc) {
+        doc = { name: meta.doc.name, pages: meta.doc.pages, blob: file.slice(off, off + meta.doc.size, 'application/pdf') };
+      }
+      var session = {
+        id: 's' + (meta.created || 1) + 'imp', // stable id: re-importing the same file replaces, not duplicates
+        name: meta.name || 'Imported recording',
+        created: meta.created || 1,
+        duration: meta.duration || 0,
+        mime: meta.mime || 'audio/webm',
+        audio: audio,
+        transcript: meta.transcript || [],
+        notes: meta.notes || [],
+        pageMarks: meta.pageMarks || [],
+        ink: meta.ink || {},
+        flags: meta.flags || [],
+        doc: doc
+      };
+      return dbPut(session);
+    });
+  }).then(function () {
+    renderHome();
+  }).catch(function (err) {
+    console.error('import failed', err);
+    alert('Could not import that file (' + (err.message || err) + '). Make sure it is a .notehub backup.');
+  });
+}
+
 function hexToRgb01(hex) {
   return window.PDFLib.rgb(
     parseInt(hex.substring(1, 3), 16) / 255,
@@ -2408,6 +2547,8 @@ document.addEventListener('visibilitychange', function () {
   // bank everything the instant the tab goes to the background - iPads
   // are quick to kill background tabs
   if (document.visibilityState === 'hidden' && rec.running) liveMetaFlush();
+  // wake locks are auto-released when the tab hides; re-grab on return
+  if (document.visibilityState === 'visible' && rec.running && !wakeLock) acquireWakeLock();
 });
 $('homeBtn').addEventListener('click', function () {
   if (rec.running) {
@@ -2422,6 +2563,13 @@ $('exportAudioBtn').addEventListener('click', exportAudio);
 $('exportTextBtn').addEventListener('click', exportText);
 $('copyTextBtn').addEventListener('click', copyText);
 $('exportPdfBtn').addEventListener('click', exportMarkedPdf);
+$('backupBtn').addEventListener('click', exportBackup);
+$('importBtn').addEventListener('click', function () { $('importFile').click(); });
+$('importFile').addEventListener('change', function () {
+  var f = $('importFile').files[0];
+  if (f) importBackup(f);
+  $('importFile').value = '';
+});
 $('playTitle').addEventListener('input', function () {
   if (play.session) { play.session.name = $('playTitle').textContent.trim() || play.session.name; scheduleSave(); }
 });
