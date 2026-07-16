@@ -471,6 +471,7 @@
       <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <h2 style="font-size:21px;"><span id="playTitle" contenteditable="true" spellcheck="false" style="outline:none; border-bottom:1px dashed var(--shell-border);"></span> <span style="color:var(--muted); font-size:15px;" title="Tap the name to rename">&#9998;</span></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn gold small" id="recallBtn">&#9889; Recall</button>
           <button class="btn ghost small" id="backupBtn">Back up (.notehub)</button>
           <button class="btn ghost small" id="exportAudioBtn">Download audio</button>
           <button class="btn ghost small hidden" id="exportPdfBtn">Download marked-up PDF</button>
@@ -549,6 +550,30 @@
     </div>
     <audio id="player"></audio>
     <input type="file" id="playDocFile" accept="application/pdf,.pdf" class="hidden">
+  </div>
+
+  <!-- ============ RECALL (on-the-go active recall) ============ -->
+  <div id="recallView" class="hidden" style="display:flex; flex-direction:column; flex:1;">
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h2 style="font-size:20px;" id="recallTitle">Recall</h2>
+        <div style="display:flex; gap:10px; align-items:center;">
+          <span style="color:var(--muted); font-size:15px; font-variant-numeric:tabular-nums;" id="recallProgress"></span>
+          <button class="btn ghost small" id="recallExit">Done</button>
+        </div>
+      </div>
+      <div class="status-line">Say the answer OUT LOUD from memory first. Then reveal and grade yourself honestly &mdash; gaps go into the study-session export for Claude to drill.</div>
+    </div>
+    <div class="card" id="recallCard">
+      <div id="recallCue" style="font-size:20px; color:var(--text); line-height:1.6;"></div>
+      <div style="text-align:center; margin-top:10px;"><canvas id="recallCanvas" class="hidden" style="border-radius:8px; background:#fff; max-width:100%;"></canvas></div>
+      <div id="recallAnswer" class="hidden" style="margin-top:14px; border-top:1px solid var(--shell-border); padding-top:12px; font-size:18px;"></div>
+      <div style="display:flex; gap:10px; margin-top:18px; flex-wrap:wrap;">
+        <button class="btn blue big" id="recallReveal">Reveal</button>
+        <button class="btn green big hidden" id="recallGot">Got it</button>
+        <button class="btn red big hidden" id="recallGapsBtn">Had gaps</button>
+      </div>
+    </div>
   </div>
 
 </div>
@@ -772,6 +797,7 @@ function showView(name) {
   $('homeView').classList.toggle('hidden', name !== 'home');
   $('recordView').classList.toggle('hidden', name !== 'record');
   $('playView').classList.toggle('hidden', name !== 'play');
+  $('recallView').classList.toggle('hidden', name !== 'recall');
 }
 
 /* ================= PDF document viewer ================= */
@@ -2194,6 +2220,15 @@ function buildStudyMarkdown(s) {
     lines.push('');
   }
 
+  if (s.recallGaps && s.recallGaps.length) {
+    lines.push('## SELF-RECALL GAPS (she quizzed herself and missed these - drill them, two-day clear rule)');
+    lines.push('');
+    s.recallGaps.forEach(function (g) {
+      lines.push('- ' + (g.page ? '(p. ' + g.page + ') ' : '') + g.label);
+    });
+    lines.push('');
+  }
+
   var marks = s.pageMarks || [];
   if (s.doc && marks.length) {
     lines.push('## Page timing');
@@ -2406,6 +2441,161 @@ function copyText() {
     done(legacyCopy(md));
   }
 }
+
+/* ================= on-the-go active recall ================= */
+/* Cue-based free recall, brain-dump style: the cue is a slide, a flagged
+   moment, or "you wrote a note here" - never the content itself. She
+   recalls out loud, reveals the professor's actual words + her notes,
+   and self-grades. "Had gaps" cards are saved into the session and land
+   in the study-session export for Claude to drill. */
+var recall = { cards: [], idx: 0, got: 0, gaps: 0 };
+
+function buildRecallCards(s) {
+  var cards = [];
+  var marks = s.pageMarks || [];
+  (s.flags || []).forEach(function (f, i) {
+    var quote = null;
+    (s.transcript || []).forEach(function (seg) { if (seg.t <= f.t) quote = seg; });
+    cards.push({
+      id: 'flag' + i, page: f.page,
+      cue: '<span class="star">&#9733;</span> You flagged this moment as <b>ON THE EXAM</b>' +
+        (f.page ? ' (p. ' + f.page + ')' : '') + '. Say out loud what he said here.',
+      answer: quote ? '&quot;' + esc(quote.text) + '&quot;' : '(no transcript captured at that moment - open the recording and tap ' + fmt(f.t) + ' to listen)',
+      gapLabel: 'flagged moment: ' + (quote ? '"' + quote.text + '"' : 'at ' + fmt(f.t))
+    });
+  });
+  if (s.doc && marks.length) {
+    var pages = [];
+    marks.forEach(function (m) { if (pages.indexOf(m.page) === -1) pages.push(m.page); });
+    pages.forEach(function (p) {
+      var segs = (s.transcript || []).filter(function (seg) { return pageAtMarks(marks, seg.t) === p; });
+      var notes = (s.notes || []).filter(function (n) { return n.page === p; });
+      if (!segs.length && !notes.length) return;
+      var ans = '';
+      if (segs.length) {
+        ans += '<div style="color:var(--muted); font-size:14px; margin-bottom:4px;">He said:</div>';
+        segs.forEach(function (x) { ans += '<div>&bull; ' + esc(x.text) + '</div>'; });
+      }
+      if (notes.length) {
+        ans += '<div style="color:var(--muted); font-size:14px; margin:10px 0 4px;">Your notes:</div>';
+        notes.forEach(function (n) { ans += '<div>&bull; ' + esc(n.text) + '</div>'; });
+      }
+      cards.push({
+        id: 'page' + p, page: p, showPage: true,
+        cue: '<b>Slide / p. ' + p + '</b> &mdash; teach it back: say everything he covered here.',
+        answer: ans,
+        gapLabel: 'slide p. ' + p
+      });
+    });
+  }
+  (s.notes || []).forEach(function (n, i) {
+    cards.push({
+      id: 'note' + i, page: n.page,
+      cue: 'At <b>' + fmt(n.t) + '</b>' + (n.page ? ' (p. ' + n.page + ')' : '') +
+        ' you thought something was worth writing down. What was it, and why did it matter?',
+      answer: esc(n.text),
+      gapLabel: 'her note: "' + n.text + '"'
+    });
+  });
+  // Fisher-Yates shuffle every run
+  for (var i = cards.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var tmp = cards[i]; cards[i] = cards[j]; cards[j] = tmp;
+  }
+  return cards;
+}
+
+function startRecall() {
+  var s = play.session; if (!s) return;
+  var cards = buildRecallCards(s);
+  if (!cards.length) {
+    alert('Nothing to recall yet - this recording has no flags, notes, or transcript.');
+    return;
+  }
+  recall = { cards: cards, idx: 0, got: 0, gaps: 0 };
+  s.recallGaps = [];
+  $('recallTitle').textContent = 'Recall: ' + s.name;
+  showView('recall');
+  showRecallCard();
+}
+
+function renderPageThumb(canvas, pageNum) {
+  if (!playViewer.pdf) { canvas.classList.add('hidden'); return; }
+  playViewer.pdf.getPage(pageNum).then(function (page) {
+    var maxW = Math.max(240, Math.min(700, $('recallCard').clientWidth - 44));
+    var vp1 = page.getViewport({ scale: 1 });
+    var dpr = window.devicePixelRatio || 1;
+    var vp = page.getViewport({ scale: maxW / vp1.width * dpr });
+    canvas.width = vp.width;
+    canvas.height = vp.height;
+    canvas.style.width = Math.floor(vp.width / dpr) + 'px';
+    canvas.style.height = Math.floor(vp.height / dpr) + 'px';
+    page.render({ canvasContext: canvas.getContext('2d'), viewport: vp });
+  }).catch(function () { canvas.classList.add('hidden'); });
+}
+
+function showRecallCard() {
+  var c = recall.cards[recall.idx];
+  $('recallProgress').textContent = (recall.idx + 1) + ' / ' + recall.cards.length;
+  $('recallCue').innerHTML = c.cue;
+  $('recallAnswer').classList.add('hidden');
+  $('recallAnswer').innerHTML = '';
+  $('recallReveal').classList.remove('hidden');
+  $('recallGot').classList.add('hidden');
+  $('recallGapsBtn').classList.add('hidden');
+  var cv = $('recallCanvas');
+  if (c.showPage && playViewer.pdf) {
+    cv.classList.remove('hidden');
+    cv.classList.toggle('page-dark', prefs.darkPage);
+    renderPageThumb(cv, c.page);
+  } else {
+    cv.classList.add('hidden');
+  }
+}
+
+function recallGrade(gotIt) {
+  var c = recall.cards[recall.idx];
+  if (gotIt) {
+    recall.got++;
+  } else {
+    recall.gaps++;
+    play.session.recallGaps.push({ id: c.id, page: c.page || null, label: c.gapLabel });
+  }
+  recall.idx++;
+  if (recall.idx >= recall.cards.length) {
+    dbPut(play.session).catch(function (e) { console.error(e); });
+    $('recallProgress').textContent = '';
+    $('recallCue').innerHTML = '<b>Done.</b> Got it: <span style="color:var(--green)">' + recall.got +
+      '</span> &middot; Had gaps: <span style="color:var(--red-text)">' + recall.gaps + '</span>' +
+      (recall.gaps
+        ? '<div style="font-size:16px; color:var(--body); margin-top:10px;">Your gaps are saved. Tap <b>Copy study session</b> and paste it to Claude &mdash; it will drill exactly what you missed.</div>'
+        : '<div style="font-size:16px; color:var(--body); margin-top:10px;">Clean sweep. Run it again tomorrow &mdash; recall that survives a day is the kind that survives an exam.</div>');
+    $('recallCanvas').classList.add('hidden');
+    $('recallAnswer').classList.add('hidden');
+    $('recallReveal').classList.add('hidden');
+    $('recallGot').classList.add('hidden');
+    $('recallGapsBtn').classList.add('hidden');
+    return;
+  }
+  showRecallCard();
+}
+
+$('recallBtn').addEventListener('click', startRecall);
+$('recallReveal').addEventListener('click', function () {
+  var c = recall.cards[recall.idx];
+  if (!c) return;
+  $('recallAnswer').innerHTML = c.answer;
+  $('recallAnswer').classList.remove('hidden');
+  $('recallReveal').classList.add('hidden');
+  $('recallGot').classList.remove('hidden');
+  $('recallGapsBtn').classList.remove('hidden');
+});
+$('recallGot').addEventListener('click', function () { recallGrade(true); });
+$('recallGapsBtn').addEventListener('click', function () { recallGrade(false); });
+$('recallExit').addEventListener('click', function () {
+  if (play.session) dbPut(play.session).catch(function (e) { console.error(e); });
+  showView('play');
+});
 
 /* ================= search ================= */
 function hiSnippet(text, q) {
