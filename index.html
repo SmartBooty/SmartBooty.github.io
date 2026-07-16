@@ -154,6 +154,8 @@
   }
   .pane.doc { flex: 1.3 1 400px; }
   .pane.doc.doczoomed { flex-basis: 100%; max-height: 86vh; }
+  .pane.collapsed { flex: 0 0 100%; min-height: 0; max-height: none; }
+  .pane.collapsed .scroll, .pane.collapsed .note-hint, .pane.collapsed .ink-toolbar { display: none; }
   .pane-head {
     display: flex;
     align-items: center;
@@ -390,6 +392,13 @@
       <div class="status-line" id="recStatus"></div>
     </div>
     <div class="panes">
+      <div class="pane">
+        <div class="pane-head">
+          <h2>Live transcript</h2>
+          <button class="btn ghost tiny collapse-btn" data-key="recTx">Hide</button>
+        </div>
+        <div class="scroll" id="liveTranscript"></div>
+      </div>
       <div class="pane doc">
         <div class="pane-head">
           <h2>Slides / Chapter</h2>
@@ -434,11 +443,10 @@
         </div>
       </div>
       <div class="pane">
-        <div class="pane-head"><h2>Live transcript</h2></div>
-        <div class="scroll" id="liveTranscript"></div>
-      </div>
-      <div class="pane">
-        <div class="pane-head"><h2>My notes</h2></div>
+        <div class="pane-head">
+          <h2>My notes</h2>
+          <button class="btn ghost tiny collapse-btn" data-key="recNotes">Hide</button>
+        </div>
         <div class="scroll" id="liveNotes"></div>
         <div class="note-hint">Type anywhere. Each line is stamped to the moment you start it (and the page you were on). Enter = new line.</div>
       </div>
@@ -473,6 +481,13 @@
       <div id="searchResults" class="search-results hidden"></div>
     </div>
     <div class="panes">
+      <div class="pane">
+        <div class="pane-head">
+          <h2>Transcript</h2>
+          <button class="btn ghost tiny collapse-btn" data-key="playTx">Hide</button>
+        </div>
+        <div class="scroll" id="playTranscript"></div>
+      </div>
       <div class="pane doc">
         <div class="pane-head">
           <h2>Slides / Chapter</h2>
@@ -512,11 +527,10 @@
         </div>
       </div>
       <div class="pane">
-        <div class="pane-head"><h2>Transcript</h2></div>
-        <div class="scroll" id="playTranscript"></div>
-      </div>
-      <div class="pane">
-        <div class="pane-head"><h2>My notes</h2></div>
+        <div class="pane-head">
+          <h2>My notes</h2>
+          <button class="btn ghost tiny collapse-btn" data-key="playNotes">Hide</button>
+        </div>
         <div class="scroll" id="playNotes"></div>
         <div class="note-hint">Notes stay editable here. Edits save automatically.</div>
       </div>
@@ -760,12 +774,13 @@ var INK_TOOLS = {
 
 /* Global preferences, persisted across sessions. Pencil-only defaults ON:
    pens (Apple Pencil, Windows pen) and the mouse draw; fingers scroll. */
-var prefs = { penColor: '#3b82f6', penOnly: true, darkPage: false };
+var prefs = { penColor: '#3b82f6', penOnly: true, darkPage: false, collapsed: {} };
 try {
   var storedPrefs = JSON.parse(localStorage.getItem('lecturescribe_prefs') || '{}');
   if (typeof storedPrefs.penColor === 'string') prefs.penColor = storedPrefs.penColor;
   if ('penOnly' in storedPrefs) prefs.penOnly = !!storedPrefs.penOnly;
   if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
+  if (storedPrefs.collapsed && typeof storedPrefs.collapsed === 'object') prefs.collapsed = storedPrefs.collapsed;
 } catch (e) {}
 function savePrefs() {
   try { localStorage.setItem('lecturescribe_prefs', JSON.stringify(prefs)); } catch (e) {}
@@ -889,31 +904,73 @@ DocViewer.prototype._bindGestures = function () {
   /* Swipe page turning (no ink tool active): swipe left = next page,
      swipe right = previous. A vertical swipe flips only when the page edge
      was already reached when the gesture began, so a zoomed page scrolls
-     normally first. */
-  var swipe = null;
-  el.addEventListener('pointerdown', function (e) {
-    if (!self.pdf || self.tool || pinching || Object.keys(touches).length > 1) { swipe = null; return; }
-    swipe = {
-      x: e.clientX, y: e.clientY,
+     normally first. Touch swipes are detected via touch events, which keep
+     firing even when the browser hijacks the gesture for native scrolling
+     (pointer events get cancelled mid-swipe on iPads); mouse swipes use
+     pointer events. A shared cooldown stops double-firing. */
+  var swipeCooldownT = 0;
+  var edgeState = function () {
+    return {
       atTop: el.scrollTop <= 2,
       atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
       atLeft: el.scrollLeft <= 2,
       atRight: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
     };
+  };
+  var trySwipe = function (dx, dy, s) {
+    if (Date.now() < swipeCooldownT) return;
+    var did = false;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) {
+      if (dx < 0 && s.atRight) { self.goto(self.page + 1, false); did = true; }
+      else if (dx > 0 && s.atLeft) { self.goto(self.page - 1, false); did = true; }
+    } else if (Math.abs(dy) > 60 && Math.abs(dy) > 2 * Math.abs(dx)) {
+      if (dy < 0 && s.atBottom) { self.goto(self.page + 1, false); did = true; }
+      else if (dy > 0 && s.atTop) { self.goto(self.page - 1, false); did = true; }
+    }
+    if (did) swipeCooldownT = Date.now() + 600;
+  };
+
+  var swipe = null; // mouse / real-pen path
+  el.addEventListener('pointerdown', function (e) {
+    if (!self.pdf || self.tool || pinching || e.pointerType === 'touch') { swipe = null; return; }
+    swipe = { x: e.clientX, y: e.clientY, s: edgeState() };
   }, true);
   el.addEventListener('pointerup', function (e) {
     if (!swipe || pinching) { swipe = null; return; }
-    var dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
-    var s = swipe;
+    var st = swipe;
     swipe = null;
-    if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) {
-      if (dx < 0 && s.atRight) self.goto(self.page + 1, false);
-      else if (dx > 0 && s.atLeft) self.goto(self.page - 1, false);
-    } else if (Math.abs(dy) > 60 && Math.abs(dy) > 2 * Math.abs(dx)) {
-      if (dy < 0 && s.atBottom) self.goto(self.page + 1, false);
-      else if (dy > 0 && s.atTop) self.goto(self.page - 1, false);
-    }
+    if (e.pointerType === 'touch') return;
+    trySwipe(e.clientX - st.x, e.clientY - st.y, st.s);
   }, true);
+
+  var tSwipe = null; // finger path
+  el.addEventListener('touchstart', function (e) {
+    if (!self.pdf || self.tool || e.touches.length !== 1) { tSwipe = null; return; }
+    var t = e.touches[0];
+    tSwipe = { x: t.clientX, y: t.clientY, s: edgeState() };
+  }, { passive: true });
+  el.addEventListener('touchmove', function (e) {
+    if (!tSwipe) return;
+    if (e.touches.length > 1) { tSwipe = null; return; } // pinch, not a swipe
+    // decide mid-gesture: waiting for touchend is unreliable once the
+    // browser hijacks the gesture for scrolling
+    var t = e.touches[0];
+    var dx = t.clientX - tSwipe.x, dy = t.clientY - tSwipe.y;
+    if (Math.abs(dx) > 60 || Math.abs(dy) > 60) {
+      var st = tSwipe;
+      tSwipe = null;
+      trySwipe(dx, dy, st.s);
+    }
+  }, { passive: true });
+  el.addEventListener('touchend', function (e) {
+    if (!tSwipe) return;
+    if (e.touches.length > 0) { tSwipe = null; return; }
+    var t = e.changedTouches[0];
+    var st = tSwipe;
+    tSwipe = null;
+    trySwipe(t.clientX - st.x, t.clientY - st.y, st.s);
+  }, { passive: true });
+  el.addEventListener('touchcancel', function () { tSwipe = null; }, { passive: true });
 
   /* Mouse wheel / trackpad on PC: scrolling past the page edge turns the
      page, with a cooldown so one scroll gesture flips one page. */
@@ -1329,6 +1386,37 @@ function updateInkBars() {
 }
 applyDarkPref();
 updateInkBars();
+
+/* Hide/Show side panes (transcript, notes) so the document gets the room */
+function applyCollapsed() {
+  var btns = document.querySelectorAll('.collapse-btn');
+  for (var i = 0; i < btns.length; i++) {
+    var b = btns[i];
+    var on = !!(prefs.collapsed && prefs.collapsed[b.dataset.key]);
+    var pane = b.closest('.pane');
+    if (pane) pane.classList.toggle('collapsed', on);
+    b.textContent = on ? 'Show' : 'Hide';
+  }
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function () {
+    recViewer.render();
+    playViewer.render();
+  }, 80);
+}
+(function () {
+  var btns = document.querySelectorAll('.collapse-btn');
+  for (var i = 0; i < btns.length; i++) {
+    (function (b) {
+      b.addEventListener('click', function () {
+        prefs.collapsed = prefs.collapsed || {};
+        prefs.collapsed[b.dataset.key] = !prefs.collapsed[b.dataset.key];
+        savePrefs();
+        applyCollapsed();
+      });
+    })(btns[i]);
+  }
+})();
+applyCollapsed();
 
 var resizeTimer = null;
 window.addEventListener('resize', function () {
