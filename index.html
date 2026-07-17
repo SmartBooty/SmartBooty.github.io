@@ -488,6 +488,7 @@
           <button class="btn ghost small" id="backupBtn">Back up (.notehub)</button>
           <button class="btn ghost small" id="exportAudioBtn">Download audio</button>
           <button class="btn ghost small hidden" id="exportPdfBtn">Download marked-up PDF</button>
+          <button class="btn ghost small" id="copyTxBtn">Copy transcript</button>
           <button class="btn ghost small" id="copyTextBtn">Copy study session</button>
           <button class="btn green small" id="exportTextBtn">Export study session (.md)</button>
         </div>
@@ -1648,7 +1649,9 @@ function beginRecording() {
     rec.chunkSeq = 0;
     rec.mime = pickMime();
 
-    var opts = rec.mime ? { mimeType: rec.mime } : undefined;
+    // voice-optimized bitrate: a 3-hour lecture lands near 65 MB instead of 150+
+    var opts = { audioBitsPerSecond: 48000 };
+    if (rec.mime) opts.mimeType = rec.mime;
     rec.mediaRecorder = new MediaRecorder(stream, opts);
     rec.mediaRecorder.ondataavailable = function (e) {
       if (e.data && e.data.size > 0) {
@@ -2148,13 +2151,25 @@ function pageAt(t) {
   return page;
 }
 
-/* Finds the index of the transcript segment a flag lands inside (the last
-   segment that starts at or before the flag time). */
+/* Finds the transcript segment a flag refers to: the last segment starting
+   at or before the flag - or, if the sentence was still being transcribed
+   when she tapped, the first segment within 10s after. */
+function flagSegIndex(s, f) {
+  var idx = -1;
+  (s.transcript || []).forEach(function (seg, i) { if (seg.t <= f.t) idx = i; });
+  if (idx === -1) {
+    (s.transcript || []).some(function (seg, i) {
+      if (seg.t > f.t && seg.t <= f.t + 10) { idx = i; return true; }
+      return seg.t > f.t + 10;
+    });
+  }
+  return idx;
+}
+
 function flaggedSegments(s) {
   var set = {};
   (s.flags || []).forEach(function (f) {
-    var idx = -1;
-    (s.transcript || []).forEach(function (seg, i) { if (seg.t <= f.t) idx = i; });
+    var idx = flagSegIndex(s, f);
     if (idx >= 0) set[idx] = true;
   });
   return set;
@@ -2296,8 +2311,8 @@ function buildStudyMarkdown(s) {
     lines.push('## PROFESSOR FLAGGED AS ON THE EXAM (starred live in class - drill these hardest)');
     lines.push('');
     s.flags.forEach(function (f) {
-      var quote = null;
-      (s.transcript || []).forEach(function (seg) { if (seg.t <= f.t) quote = seg.text; });
+      var qi = flagSegIndex(s, f);
+      var quote = qi >= 0 ? s.transcript[qi].text : null;
       var pg = f.page ? ' (p. ' + f.page + ')' : '';
       lines.push('- [' + fmt(f.t) + ']' + pg + (quote ? ' "' + quote + '"' : ' (no transcript captured at this moment)'));
     });
@@ -2337,6 +2352,16 @@ function buildStudyMarkdown(s) {
 
   lines.push('## Transcript');
   lines.push('');
+  lines = lines.concat(buildTranscriptLines(s));
+  lines.push('');
+  return lines.join('\n');
+}
+
+/* Just the professor's words: slide-grouped, timestamped, flagged lines
+   starred. Shared by the study-session export and Copy transcript. */
+function buildTranscriptLines(s) {
+  var lines = [];
+  var marks = s.pageMarks || [];
   var starSet = flaggedSegments(s);
   if (s.transcript && s.transcript.length) {
     if (s.doc && marks.length) {
@@ -2359,8 +2384,24 @@ function buildStudyMarkdown(s) {
   } else {
     lines.push('(no transcript captured)');
   }
-  lines.push('');
-  return lines.join('\n');
+  return lines;
+}
+
+function copyTranscript() {
+  var s = play.session; if (!s) return;
+  var text = '# ' + s.name + ' - what the professor said\n' +
+    '(★ = flagged as on the exam; timestamps are minutes:seconds from the start)\n\n' +
+    buildTranscriptLines(s).join('\n');
+  var done = function (ok) {
+    var b = $('copyTxBtn');
+    b.textContent = ok ? 'Copied!' : 'Copy failed';
+    setTimeout(function () { b.textContent = 'Copy transcript'; }, 2500);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(legacyCopy(text)); });
+  } else {
+    done(legacyCopy(text));
+  }
 }
 
 function exportText() {
@@ -2538,8 +2579,8 @@ function buildRecallCards(s) {
   var cards = [];
   var marks = s.pageMarks || [];
   (s.flags || []).forEach(function (f, i) {
-    var quote = null;
-    (s.transcript || []).forEach(function (seg) { if (seg.t <= f.t) quote = seg; });
+    var qi = flagSegIndex(s, f);
+    var quote = qi >= 0 ? s.transcript[qi] : null;
     cards.push({
       id: 'flag' + i, page: f.page,
       cue: '<span class="star">&#9733;</span> You flagged this moment as <b>ON THE EXAM</b>' +
@@ -2836,6 +2877,7 @@ $('homeBtn').addEventListener('click', function () {
 $('exportAudioBtn').addEventListener('click', exportAudio);
 $('exportTextBtn').addEventListener('click', exportText);
 $('copyTextBtn').addEventListener('click', copyText);
+$('copyTxBtn').addEventListener('click', copyTranscript);
 $('exportPdfBtn').addEventListener('click', exportMarkedPdf);
 $('backupBtn').addEventListener('click', exportBackup);
 $('importBtn').addEventListener('click', function () { $('importFile').click(); });
@@ -2941,7 +2983,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784250524292';
+var APP_VERSION = '1784250991448';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
