@@ -29,16 +29,17 @@ self.addEventListener('fetch', function (e) {
     return;
   }
 
+  // static assets: network-first too, so updated icons/manifest are never
+  // stuck behind an old cached copy; cache is the offline fallback
   e.respondWith(
-    caches.match(e.request).then(function (hit) {
-      if (hit) return hit;
-      return fetch(e.request).then(function (res) {
-        if (res && res.ok) {
-          var copy = res.clone();
-          caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
-        }
-        return res;
-      });
+    fetch(e.request).then(function (res) {
+      if (res && res.ok) {
+        var copy = res.clone();
+        caches.open(CACHE).then(function (c) { c.put(e.request, copy); });
+      }
+      return res;
+    }).catch(function () {
+      return caches.match(e.request);
     })
   );
 });
