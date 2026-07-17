@@ -459,7 +459,7 @@
           <button class="btn ghost tiny collapse-btn" data-key="recNotes">Hide</button>
         </div>
         <div class="scroll" id="liveNotes"></div>
-        <div class="note-hint">Type anywhere. Each line is stamped to the moment you start it (and the page you were on). Enter = new line.</div>
+        <div class="note-hint">Type anywhere. Each line is stamped to the moment you start it (and the page you were on). Enter = new line. Tap any earlier line to fix it.</div>
       </div>
     </div>
     <input type="file" id="recDocFile" accept="application/pdf,.pdf" class="hidden">
@@ -812,10 +812,11 @@ var INK_TOOLS = {
 
 /* Global preferences, persisted across sessions. Pencil-only defaults ON:
    pens (Apple Pencil, Windows pen) and the mouse draw; fingers scroll. */
-var prefs = { penColor: '#3b82f6', penOnly: true, darkPage: false, collapsed: {} };
+var prefs = { penColor: '#3b82f6', hlColor: '#f5c842', penOnly: true, darkPage: false, collapsed: {} };
 try {
   var storedPrefs = JSON.parse(localStorage.getItem('lecturescribe_prefs') || '{}');
   if (typeof storedPrefs.penColor === 'string') prefs.penColor = storedPrefs.penColor;
+  if (typeof storedPrefs.hlColor === 'string') prefs.hlColor = storedPrefs.hlColor;
   if ('penOnly' in storedPrefs) prefs.penOnly = !!storedPrefs.penOnly;
   if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
   if (storedPrefs.collapsed && typeof storedPrefs.collapsed === 'object') prefs.collapsed = storedPrefs.collapsed;
@@ -1081,6 +1082,7 @@ DocViewer.prototype.setTool = function (t) {
   for (var i = 0; i < btns.length; i++) {
     btns[i].classList.toggle('active-tool', btns[i].dataset.tool === t);
   }
+  if (typeof updateInkBars === 'function') updateInkBars();
 };
 DocViewer.prototype._bindInk = function () {
   var self = this;
@@ -1095,9 +1097,13 @@ DocViewer.prototype._bindInk = function () {
       return;
     }
     if (b.dataset.color) {
-      prefs.penColor = b.dataset.color;
+      if (self.tool === 'hl') {
+        prefs.hlColor = b.dataset.color; // color the highlighter you're holding
+      } else {
+        prefs.penColor = b.dataset.color;
+        self.setTool('pen'); // otherwise picking a color picks up the pen
+      }
       savePrefs();
-      self.setTool('pen'); // picking a color picks up the pen
       updateInkBars();
       return;
     }
@@ -1148,6 +1154,7 @@ DocViewer.prototype._beginStroke = function (pt) {
   } else {
     this._stroke = { tool: this.tool, t: this.timeFn ? this.timeFn() : 0, points: [pt] };
     if (this.tool === 'pen') this._stroke.color = prefs.penColor;
+    else if (this.tool === 'hl') this._stroke.color = prefs.hlColor;
   }
 };
 DocViewer.prototype._pointerDown = function (e) {
@@ -1414,9 +1421,11 @@ function applyDarkPref() {
 
 function updateInkBars() {
   [recViewer, playViewer].forEach(function (v) {
+    // the dots show the color of whichever tool this bar's viewer is holding
+    var active = v.tool === 'hl' ? prefs.hlColor : prefs.penColor;
     var dots = v.els.inkBar.querySelectorAll('.color-dot');
     for (var i = 0; i < dots.length; i++) {
-      dots[i].classList.toggle('sel', dots[i].dataset.color === prefs.penColor);
+      dots[i].classList.toggle('sel', dots[i].dataset.color === active);
     }
     var po = v.els.inkBar.querySelector('[data-act="penonly"]');
     if (po) po.classList.toggle('toggle-on', prefs.penOnly);
@@ -1889,12 +1898,31 @@ function addNoteBlock(focus) {
   body.addEventListener('keydown', function (e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      commitPendingNote();
-      addNoteBlock(true);
+      if (pendingNote && pendingNote.el === div) {
+        commitPendingNote();
+        addNoteBlock(true);
+      } else {
+        body.blur(); // Enter inside an earlier note just finishes the edit
+      }
     }
   });
   if (focus) body.focus();
   box.scrollTop = box.scrollHeight;
+}
+
+/* Committed lines stay editable during class: tap any earlier note to fix
+   it. Edits update the stored note (timestamp and page stay untouched). */
+function wireCommittedNote(body, idx) {
+  var flushTimer = null;
+  body.dataset.noteIdx = idx;
+  body.addEventListener('input', function () {
+    var i = parseInt(body.dataset.noteIdx, 10);
+    if (!isNaN(i) && rec.notes[i]) {
+      rec.notes[i].text = body.textContent;
+      clearTimeout(flushTimer);
+      flushTimer = setTimeout(liveMetaFlush, 800);
+    }
+  });
 }
 
 function commitPendingNote() {
@@ -1907,7 +1935,7 @@ function commitPendingNote() {
       text: text,
       page: pendingNote.page
     });
-    body.setAttribute('contenteditable', 'false');
+    wireCommittedNote(body, rec.notes.length - 1);
     liveMetaFlush();
   } else {
     pendingNote.el.remove();
