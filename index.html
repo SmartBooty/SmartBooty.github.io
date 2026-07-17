@@ -258,6 +258,16 @@
     border-radius: 10px; color: var(--text); font-family: inherit; font-size: 17px;
     padding: 10px 14px; margin-bottom: 10px;
   }
+  .course-chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .course-chips .chip {
+    background: var(--deep); border: 1px solid var(--shell-border); color: var(--body);
+    border-radius: 999px; font-family: inherit; font-size: 15px; padding: 5px 14px; cursor: pointer;
+  }
+  .course-chips .chip.active { background: rgba(94,173,255,0.18); border-color: var(--blue); color: var(--blue); }
+  .course-tag {
+    display: inline-block; background: rgba(94,173,255,0.14); color: var(--blue);
+    border-radius: 999px; font-size: 13px; padding: 1px 10px; margin-right: 6px; vertical-align: 1px;
+  }
   .sub-match { color: var(--muted); font-size: 15px; padding: 3px 6px 3px 22px; cursor: pointer; border-radius: 6px; }
   .sub-match:hover { background: rgba(94,173,255,0.08); color: var(--body); }
   .sub-match .t { color: var(--blue); font-size: 13px; margin-right: 6px; }
@@ -397,6 +407,7 @@
     <div class="card">
       <input class="home-search" id="homeSearch" type="search"
         placeholder="Search every recording &mdash; what he said, your notes&hellip;">
+      <div id="courseChips" class="course-chips hidden"></div>
       <div id="sessionList">
         <div class="empty">No recordings yet. Hit <b>New recording</b> when class starts.</div>
       </div>
@@ -450,6 +461,7 @@
           <button class="btn ghost tiny" data-tool="hl"><span class="swatch" style="background:#f5c842"></span>Highlight</button>
           <button class="btn ghost tiny" data-tool="erase">Eraser</button>
           <button class="btn ghost tiny" data-act="undo">Undo</button>
+          <button class="btn ghost tiny" data-act="redo">Redo</button>
           <button class="btn ghost tiny" data-act="penonly" title="Only the Apple Pencil draws; fingers scroll">Pencil only</button>
         </div>
         <div class="scroll" id="recDocScroll">
@@ -484,6 +496,7 @@
       <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <h2 style="font-size:21px;"><span id="playTitle" contenteditable="true" spellcheck="false" style="outline:none; border-bottom:1px dashed var(--shell-border);"></span> <span style="color:var(--muted); font-size:15px;" title="Tap the name to rename">&#9998;</span></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn ghost small" id="courseBtn" title="Tag this recording with a course">Course</button>
           <button class="btn gold small" id="recallBtn">&#9889; Recall</button>
           <button class="btn ghost small" id="backupBtn">Back up (.notehub)</button>
           <button class="btn ghost small" id="exportAudioBtn">Download audio</button>
@@ -494,7 +507,9 @@
         </div>
       </div>
       <div class="playbar">
+        <button class="btn ghost small" id="back15" title="Back 15 seconds">&#8630;15</button>
         <button class="btn blue" id="playBtn">&#9654; Play</button>
+        <button class="btn ghost small" id="fwd15" title="Forward 15 seconds">15&#8631;</button>
         <input type="range" id="seekBar" min="0" max="1000" value="0">
         <span class="clock"><span id="curClock">00:00</span> / <span id="durClock">00:00</span></span>
         <button class="btn ghost small" id="rate1">1x</button>
@@ -543,6 +558,7 @@
           <button class="btn ghost tiny" data-tool="hl"><span class="swatch" style="background:#f5c842"></span>Highlight</button>
           <button class="btn ghost tiny" data-tool="erase">Eraser</button>
           <button class="btn ghost tiny" data-act="undo">Undo</button>
+          <button class="btn ghost tiny" data-act="redo">Redo</button>
           <button class="btn ghost tiny" data-act="penonly" title="Only the Apple Pencil draws; fingers scroll">Pencil only</button>
         </div>
         <div class="scroll" id="playDocScroll">
@@ -881,6 +897,7 @@ function DocViewer(ids) {
   this.onInkChange = null;
   this.timeFn = null;       // returns the current timeline position for stroke stamps
   this.inkStore = null;
+  this._redoStore = {}; // popped strokes waiting for Redo, keyed per page
   this.tool = null;
   this._stroke = null;
   this._erasing = false;
@@ -1095,7 +1112,13 @@ DocViewer.prototype.searchText = function (q) {
 
 DocViewer.prototype.setInkStore = function (store) {
   this.inkStore = store;
+  this._redoStore = {}; // a fresh document means nothing to redo
   this.drawInk();
+};
+DocViewer.prototype._redo = function () {
+  var k = 'p' + this.page;
+  if (!this._redoStore[k]) this._redoStore[k] = [];
+  return this._redoStore[k];
 };
 DocViewer.prototype._strokes = function () {
   if (!this.inkStore) return null;
@@ -1118,6 +1141,7 @@ DocViewer.prototype._bindInk = function () {
     var b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.act === 'undo') { self.undoInk(); return; }
+    if (b.dataset.act === 'redo') { self.redoInk(); return; }
     if (b.dataset.act === 'penonly') {
       prefs.penOnly = !prefs.penOnly;
       savePrefs();
@@ -1237,6 +1261,7 @@ DocViewer.prototype._pointerUp = function () {
   if (this._stroke) {
     if (this._stroke.points.length > 1) {
       this._strokes().push(this._stroke);
+      this._redo().length = 0; // drawing something new forks history: redo is gone
       if (this.onInkChange) this.onInkChange();
     }
     this._stroke = null;
@@ -1259,6 +1284,7 @@ DocViewer.prototype._eraseAt = function (pt) {
     }
   }
   if (arr.length !== before) {
+    this._redo().length = 0;
     this.drawInk();
     if (this.onInkChange) this.onInkChange();
   }
@@ -1266,7 +1292,15 @@ DocViewer.prototype._eraseAt = function (pt) {
 DocViewer.prototype.undoInk = function () {
   var arr = this._strokes();
   if (!arr || !arr.length) return;
-  arr.pop();
+  this._redo().push(arr.pop());
+  this.drawInk();
+  if (this.onInkChange) this.onInkChange();
+};
+DocViewer.prototype.redoInk = function () {
+  var arr = this._strokes();
+  var redo = this._redo();
+  if (!arr || !redo.length) return;
+  arr.push(redo.pop());
   this.drawInk();
   if (this.onInkChange) this.onInkChange();
 };
@@ -1410,6 +1444,7 @@ DocViewer.prototype.reset = function () {
   this.zoom = 1;
   this.replayT = null;
   this.inkStore = null;
+  this._redoStore = {};
   this._stroke = null;
   this._erasing = false;
   this._pan = null;
@@ -1996,16 +2031,45 @@ function commitPendingNote() {
 }
 
 /* ================= home / session list ================= */
+var homeCourseFilter = ''; // '' = show every course
+function renderCourseChips(sessions) {
+  var chips = $('courseChips');
+  var courses = [];
+  sessions.forEach(function (s) {
+    var c = (s.course || '').trim();
+    if (c && courses.indexOf(c) === -1) courses.push(c);
+  });
+  courses.sort();
+  if (homeCourseFilter && courses.indexOf(homeCourseFilter) === -1) homeCourseFilter = '';
+  if (!courses.length) { chips.classList.add('hidden'); chips.innerHTML = ''; return; }
+  chips.classList.remove('hidden');
+  chips.innerHTML = '';
+  [''].concat(courses).forEach(function (c) {
+    var b = document.createElement('button');
+    b.className = 'chip' + (homeCourseFilter === c ? ' active' : '');
+    b.textContent = c || 'All courses';
+    b.addEventListener('click', function () { homeCourseFilter = c; renderHome(); });
+    chips.appendChild(b);
+  });
+}
 function renderHome() {
   updateStorageInfo();
   dbAll().then(function (sessions) {
     sessions.sort(function (a, b) { return b.created - a.created; });
     var box = $('sessionList');
     var q = $('homeSearch').value.trim().toLowerCase();
+    renderCourseChips(sessions);
     if (!sessions.length) {
       box.innerHTML = '<div class="empty">No recordings yet. Hit <b>New recording</b> when class starts.<br>' +
         '<span style="font-size:15px;">New here? Tap the <b>?</b> button up top for a 30-second tour.</span></div>';
       return;
+    }
+    if (homeCourseFilter) {
+      sessions = sessions.filter(function (s) { return (s.course || '').trim() === homeCourseFilter; });
+      if (!sessions.length) {
+        box.innerHTML = '<div class="empty">No recordings tagged ' + esc(homeCourseFilter) + ' yet.</div>';
+        return;
+      }
     }
     box.innerHTML = '';
     var shown = 0;
@@ -2018,7 +2082,8 @@ function renderHome() {
         (s.notes || []).forEach(function (n) {
           if (n.text.toLowerCase().indexOf(q) !== -1) matches.push({ t: n.t, text: n.text, kind: 'Note' });
         });
-        if (!matches.length && s.name.toLowerCase().indexOf(q) === -1) return; // no hit in this recording
+        if (!matches.length && s.name.toLowerCase().indexOf(q) === -1 &&
+            (s.course || '').toLowerCase().indexOf(q) === -1) return; // no hit in this recording
       }
       shown++;
       var row = document.createElement('div');
@@ -2035,7 +2100,9 @@ function renderHome() {
       if (s.flags && s.flags.length) meta += ' &middot; &#9733; ' + s.flags.length + ' exam flags';
       if (s.doc) meta += ' &middot; &#128196; ' + esc(s.doc.name);
       row.innerHTML =
-        '<div><div class="name">' + esc(s.name) + '</div>' +
+        '<div><div class="name">' +
+        (s.course ? '<span class="course-tag">' + esc(s.course) + '</span>' : '') +
+        esc(s.name) + '</div>' +
         '<div class="meta">' + meta + '</div></div>' +
         '<div class="actions"><button class="btn blue small">Open</button>' +
         '<button class="btn ghost small">Rename</button>' +
@@ -2098,6 +2165,7 @@ function openSessionObject(s) {
   player.src = play.url;
   player.playbackRate = 1;
   $('playTitle').textContent = s.name;
+  updateCourseBtn();
   $('durClock').textContent = fmt(s.duration);
   $('curClock').textContent = '00:00';
   $('seekBar').value = 0;
@@ -2886,6 +2954,19 @@ $('importFile').addEventListener('change', function () {
   if (f) importBackup(f);
   $('importFile').value = '';
 });
+function updateCourseBtn() {
+  var c = play.session && (play.session.course || '').trim();
+  $('courseBtn').textContent = c ? c : 'Course';
+  $('courseBtn').title = c ? 'Course: ' + c + ' (tap to change)' : 'Tag this recording with a course';
+}
+$('courseBtn').addEventListener('click', function () {
+  if (!play.session) return;
+  var v = prompt('Tag this recording with a course (e.g. NUR105, NUR106, BIO301).\nLeave it blank to remove the tag:', play.session.course || '');
+  if (v === null) return;
+  play.session.course = v.trim();
+  updateCourseBtn();
+  scheduleSave();
+});
 $('playTitle').addEventListener('input', function () {
   if (play.session) { play.session.name = $('playTitle').textContent.trim() || play.session.name; scheduleSave(); }
 });
@@ -2920,6 +3001,15 @@ $('seekBar').addEventListener('input', function () {
   var dur = isFinite(player.duration) && player.duration > 0 ? player.duration : (play.session ? play.session.duration : 0);
   if (dur > 0) player.currentTime = $('seekBar').value / 1000 * dur;
 });
+function jumpBy(delta) {
+  var dur = isFinite(player.duration) && player.duration > 0 ? player.duration : (play.session ? play.session.duration : 0);
+  var t = player.currentTime + delta;
+  if (t < 0) t = 0;
+  if (dur > 0 && t > dur) t = dur;
+  player.currentTime = t;
+}
+$('back15').addEventListener('click', function () { jumpBy(-15); });
+$('fwd15').addEventListener('click', function () { jumpBy(15); });
 $('rate1').addEventListener('click', function () { player.playbackRate = 1; });
 $('rate15').addEventListener('click', function () { player.playbackRate = 1.5; });
 $('rate2').addEventListener('click', function () { player.playbackRate = 2; });
@@ -2984,7 +3074,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784253217571';
+var APP_VERSION = '1784267609706';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
