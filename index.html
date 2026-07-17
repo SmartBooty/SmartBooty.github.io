@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>NoteHub - Record, Transcribe, Follow Along</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="theme-color" content="#0c0c14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="NoteHub">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Merriweather:wght@700;900&display=swap" rel="stylesheet">
 <style>
@@ -362,6 +368,10 @@
     <strong>Microphone blocked.</strong> Allow microphone access for this page in your
     browser settings, then reload.
   </div>
+  <div class="notice hidden" id="updateNotice" style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">
+    <span><strong>Update ready.</strong> A new version of NoteHub is available.</span>
+    <button class="btn blue small" id="updateReload">Reload now</button>
+  </div>
   <div class="notice hidden" id="recoverNotice">
     <strong>Recovered.</strong> Your last recording was interrupted mid-class (page refreshed,
     closed, or crashed), but autosave caught it. Look for the <b>&quot;Recovered&hellip;&quot;</b> entry in
@@ -374,6 +384,7 @@
       <div>
         <h2 style="font-size:21px; margin-bottom:4px;">Your recordings</h2>
         <div style="color:var(--muted); font-size:15px;">Saved on this device. Use <b>Export study session</b> on a recording to get the file you upload for Claude study sessions.</div>
+        <div class="status-line" id="storageInfo"></div>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
         <button class="btn ghost" id="importBtn">Import backup</button>
@@ -1751,6 +1762,7 @@ function stopRecording() {
     dbPut(session).then(function () {
       liveClear(); // recording is safely saved; drop the crash-recovery copy
       openSession(session.id);
+      setTimeout(maybeShowUpdateBanner, 1500);
     }).catch(function (err) {
       console.error('save failed', err);
       alert('Saving to this device failed (' + err + '). Use Download audio to keep the file.');
@@ -1945,6 +1957,7 @@ function commitPendingNote() {
 
 /* ================= home / session list ================= */
 function renderHome() {
+  updateStorageInfo();
   dbAll().then(function (sessions) {
     sessions.sort(function (a, b) { return b.created - a.created; });
     var box = $('sessionList');
@@ -1973,6 +1986,11 @@ function renderHome() {
       var meta = d.toLocaleString() + ' &middot; ' + fmt(s.duration) +
         ' &middot; ' + (s.transcript ? s.transcript.length : 0) + ' transcript lines &middot; ' +
         (s.notes ? s.notes.length : 0) + ' notes';
+      if (s.audio && s.audio.size) {
+        meta += ' &middot; ' + (s.audio.size >= 1e9
+          ? (s.audio.size / 1e9).toFixed(1) + ' GB'
+          : Math.max(1, Math.round(s.audio.size / 1e6)) + ' MB');
+      }
       if (s.flags && s.flags.length) meta += ' &middot; &#9733; ' + s.flags.length + ' exam flags';
       if (s.doc) meta += ' &middot; &#128196; ' + esc(s.doc.name);
       row.innerHTML =
@@ -2829,6 +2847,55 @@ $('rate2').addEventListener('click', function () { player.playbackRate = 2; });
 window.addEventListener('beforeunload', function (e) {
   if (rec.running) { e.preventDefault(); e.returnValue = ''; }
 });
+
+
+/* ================= PWA: offline shell + update banner ================= */
+var APP_VERSION = '1784248890306';
+try {
+  if ('serviceWorker' in navigator &&
+      (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    navigator.serviceWorker.register('./sw.js').catch(function () {});
+  }
+} catch (e) {}
+
+var updateAvailable = false;
+function checkForUpdate() {
+  if (updateAvailable || APP_VERSION.indexOf('APPVER') !== -1) return; // dev copy: skip
+  fetch('./', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (html) {
+    var m = html.match(/APP_VERSION = '(\d+)'/);
+    if (m && m[1] !== APP_VERSION) {
+      updateAvailable = true;
+      maybeShowUpdateBanner();
+    }
+  }).catch(function () {});
+}
+function maybeShowUpdateBanner() {
+  // never interrupt a live recording with a reload prompt
+  if (updateAvailable && !rec.running) $('updateNotice').classList.remove('hidden');
+}
+$('updateReload').addEventListener('click', function () { location.reload(); });
+document.addEventListener('visibilitychange', function () {
+  if (document.visibilityState === 'visible') checkForUpdate();
+});
+setInterval(checkForUpdate, 30 * 60 * 1000);
+setTimeout(checkForUpdate, 5000);
+
+/* ================= storage health ================= */
+function updateStorageInfo() {
+  var el = $('storageInfo');
+  if (!el) return;
+  if (!(navigator.storage && navigator.storage.estimate)) { el.textContent = ''; return; }
+  navigator.storage.estimate().then(function (est) {
+    if (!est || !est.quota) { el.textContent = ''; return; }
+    var used = est.usage || 0;
+    var pct = Math.round(used / est.quota * 100);
+    var human = function (b) {
+      return b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB';
+    };
+    el.innerHTML = 'Device storage for NoteHub: <b>' + human(used) + '</b> of ' + human(est.quota) + ' available (' + pct + '%)' +
+      (pct >= 80 ? ' &mdash; <span style="color:var(--orange)"><b>getting full:</b> back up recordings you care about, then delete old ones</span>' : '');
+  }).catch(function () { el.textContent = ''; });
+}
 
 /* ================= boot ================= */
 try {
