@@ -354,7 +354,8 @@
       <h1>NoteHub</h1>
       <div class="sub">Record &middot; transcribe &middot; slides + notes synced to the audio</div>
     </div>
-    <div id="headerBtns">
+    <div id="headerBtns" style="display:flex; gap:8px;">
+      <button class="btn ghost" id="helpBtn" title="How NoteHub works">?</button>
       <button class="btn ghost" id="homeBtn">All recordings</button>
     </div>
   </header>
@@ -368,6 +369,7 @@
     <strong>Microphone blocked.</strong> Allow microphone access for this page in your
     browser settings, then reload.
   </div>
+  <div class="notice hidden" id="compatNotice" style="border-left-color: var(--red-bg);"></div>
   <div class="notice hidden" id="updateNotice" style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">
     <span><strong>Update ready.</strong> A new version of NoteHub is available.</span>
     <button class="btn blue small" id="updateReload">Reload now</button>
@@ -583,6 +585,20 @@
         <button class="btn blue big" id="recallReveal">Reveal</button>
         <button class="btn green big hidden" id="recallGot">Got it</button>
         <button class="btn red big hidden" id="recallGapsBtn">Had gaps</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ FIRST-RUN TOUR ============ -->
+  <div id="tourOverlay" class="hidden" style="position:fixed; inset:0; background:rgba(6,6,12,0.78); z-index:50; display:flex; align-items:center; justify-content:center; padding:18px;">
+    <div class="card" style="max-width:540px; width:100%; margin-bottom:0;">
+      <div id="tourEmoji" style="font-size:46px; text-align:center; line-height:1.2;"></div>
+      <h2 id="tourTitle" style="font-size:22px; text-align:center; margin:10px 0 8px;"></h2>
+      <div id="tourBody" style="font-size:17px; color:var(--body);"></div>
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-top:20px; gap:10px;">
+        <button class="btn ghost small" id="tourSkip">Skip</button>
+        <span id="tourDots" style="color:var(--muted); letter-spacing:5px; font-size:14px;"></span>
+        <button class="btn blue" id="tourNext">Next</button>
       </div>
     </div>
   </div>
@@ -1506,7 +1522,8 @@ var rec = {
   autosaveId: null,
   recognition: null,
   speechOK: false,
-  interimT: null
+  interimT: null,
+  interimText: ''
 };
 
 function elapsedNow() {
@@ -1786,6 +1803,9 @@ function updateRecStatus() {
   s += ' &middot; Live transcription ';
   s += rec.speechOK ? '<span class="on">ON</span>' : '<span class="off">unavailable</span>';
   if (recViewer.pdf) s += ' &middot; Document: <span class="on">' + esc(recViewer.name) + '</span>';
+  if (!(navigator.wakeLock && navigator.wakeLock.request)) {
+    s += ' &middot; <span class="off">this browser cannot keep the screen awake</span> - turn off auto-lock during class';
+  }
   $('recStatus').innerHTML = s;
 }
 
@@ -1817,16 +1837,20 @@ function startSpeech() {
           interim += res[0].transcript;
         }
       }
+      rec.interimText = interim;
       renderInterim(interim);
     };
     r.onend = function () {
-      // Chrome kills continuous recognition periodically; restart while recording
+      // The engine kills continuous recognition periodically. Rescue whatever
+      // it was mid-way through hearing (it never gets finalized once the
+      // session dies), then restart fast to shrink the deaf gap.
+      commitInterim();
       if (rec.running && !rec.paused && rec.recognition === r) {
         setTimeout(function () {
           if (rec.running && !rec.paused && rec.recognition === r) {
             try { r.start(); } catch (e) {}
           }
-        }, 250);
+        }, 60);
       }
     };
     r.onerror = function (e) {
@@ -1844,14 +1868,27 @@ function startSpeech() {
   }
 }
 
+/* Saves whatever the engine had half-heard as a real transcript line -
+   without this, every engine restart and every pause threw those words away. */
+function commitInterim() {
+  var text = (rec.interimText || '').trim();
+  if (text) {
+    var t = rec.interimT !== null ? rec.interimT : Math.max(0, elapsedNow() - 3);
+    rec.transcript.push({ t: t, text: text });
+    renderLiveSegment(t, text);
+  }
+  rec.interimText = '';
+  rec.interimT = null;
+  renderInterim('');
+}
+
 function stopSpeech() {
   if (rec.recognition) {
     var r = rec.recognition;
     rec.recognition = null; // prevents the onend auto-restart
     try { r.stop(); } catch (e) {}
   }
-  renderInterim('');
-  rec.interimT = null;
+  commitInterim();
 }
 
 function renderLiveSegment(t, text) {
@@ -1963,7 +2000,8 @@ function renderHome() {
     var box = $('sessionList');
     var q = $('homeSearch').value.trim().toLowerCase();
     if (!sessions.length) {
-      box.innerHTML = '<div class="empty">No recordings yet. Hit <b>New recording</b> when class starts.</div>';
+      box.innerHTML = '<div class="empty">No recordings yet. Hit <b>New recording</b> when class starts.<br>' +
+        '<span style="font-size:15px;">New here? Tap the <b>?</b> button up top for a 30-second tour.</span></div>';
       return;
     }
     box.innerHTML = '';
@@ -2849,8 +2887,61 @@ window.addEventListener('beforeunload', function (e) {
 });
 
 
+/* ================= first-run tour ================= */
+var TOUR = [
+  { e: '🎙️', t: 'Welcome to NoteHub', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
+  { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and flip to where the lecture starts. Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (colors and highlighter in the toolbar - fingers scroll, pencil writes). Type notes on the right; every line is stamped to the moment you wrote it. And when the professor says <b>&quot;this will be on the exam&quot;</b> - hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '⚡', t: 'After class', b: 'Open the recording: everything replays in sync, and tapping any timestamp jumps the audio there. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' }
+];
+var tourStep = 0;
+function renderTourStep() {
+  var s = TOUR[tourStep];
+  $('tourEmoji').textContent = s.e;
+  $('tourTitle').textContent = s.t;
+  $('tourBody').innerHTML = s.b;
+  var dots = '';
+  for (var i = 0; i < TOUR.length; i++) dots += (i === tourStep ? '●' : '○');
+  $('tourDots').textContent = dots;
+  $('tourNext').textContent = tourStep === TOUR.length - 1 ? 'Get started' : 'Next';
+}
+function openTour() {
+  tourStep = 0;
+  renderTourStep();
+  $('tourOverlay').classList.remove('hidden');
+}
+function closeTour() {
+  $('tourOverlay').classList.add('hidden');
+  try { localStorage.setItem('notehub_tour_done', '1'); } catch (e) {}
+}
+$('tourNext').addEventListener('click', function () {
+  if (tourStep >= TOUR.length - 1) { closeTour(); return; }
+  tourStep++;
+  renderTourStep();
+});
+$('tourSkip').addEventListener('click', closeTour);
+$('helpBtn').addEventListener('click', openTour);
+function maybeOpenTour() {
+  var done = null;
+  try { done = localStorage.getItem('notehub_tour_done'); } catch (e) {}
+  if (!done) openTour();
+}
+
+/* ================= compatibility fallbacks ================= */
+/* Say clearly what this browser can and cannot do, instead of failing quietly. */
+function applyCompat() {
+  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof MediaRecorder !== 'undefined');
+  if (!canRecord) {
+    $('compatNotice').innerHTML = '<strong>This browser cannot record audio.</strong> ' +
+      'NoteHub needs an up-to-date Chrome, Edge, or Safari. You can still open, play, and mark up ' +
+      'recordings that were imported from a backup.';
+    $('compatNotice').classList.remove('hidden');
+    $('newRecBtn').disabled = true;
+  }
+}
+
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784248890306';
+var APP_VERSION = '1784250524292';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -2902,12 +2993,14 @@ try {
   // ask the browser to protect this site's storage from cleanup eviction
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 } catch (e) {}
+applyCompat();
 openDB().then(function () {
   return recoverLiveSession();
 }).then(function (recovered) {
   if (recovered) $('recoverNotice').classList.remove('hidden');
   renderHome();
   showView('home');
+  maybeOpenTour();
 }).catch(function (err) {
   console.error('IndexedDB unavailable', err);
   $('sessionList').innerHTML = '<div class="empty">Storage is unavailable in this browser mode (private browsing?). You can still record and use Download to keep files.</div>';
