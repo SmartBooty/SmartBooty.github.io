@@ -188,6 +188,7 @@
   }
   .pane .scroll { flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; }
   .pane.doc .scroll { padding: 10px; text-align: center; background: var(--deep); border-radius: 0 0 14px 14px; overflow: auto; touch-action: pan-x pan-y; }
+  .pane.doc .scroll.pagelocked { overflow: hidden; touch-action: none; }
   .pane.doc canvas { border-radius: 6px; background: #fff; }
 
   .doc-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -447,6 +448,7 @@
               <button class="btn ghost tiny" id="recZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="recZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="recDarkBtn" title="Dark page mode">Dark</button>
+              <button class="btn ghost tiny" id="recLockBtn" title="Lock the page in place &mdash; it cannot move around; swiping only turns pages">&#128275; Lock</button>
             </span>
           </div>
         </div>
@@ -544,6 +546,7 @@
               <button class="btn ghost tiny" id="playZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="playZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="playDarkBtn" title="Dark page mode">Dark</button>
+              <button class="btn ghost tiny" id="playLockBtn" title="Lock the page in place &mdash; it cannot move around; swiping only turns pages">&#128275; Lock</button>
             </span>
           </div>
         </div>
@@ -856,13 +859,14 @@ var INK_TOOLS = {
 
 /* Global preferences, persisted across sessions. Pencil-only defaults ON:
    pens (Apple Pencil, Windows pen) and the mouse draw; fingers scroll. */
-var prefs = { penColor: '#3b82f6', hlColor: '#f5c842', penOnly: true, darkPage: false, collapsed: {} };
+var prefs = { penColor: '#3b82f6', hlColor: '#f5c842', penOnly: true, darkPage: false, pageLock: false, collapsed: {} };
 try {
   var storedPrefs = JSON.parse(localStorage.getItem('lecturescribe_prefs') || '{}');
   if (typeof storedPrefs.penColor === 'string') prefs.penColor = storedPrefs.penColor;
   if (typeof storedPrefs.hlColor === 'string') prefs.hlColor = storedPrefs.hlColor;
   if ('penOnly' in storedPrefs) prefs.penOnly = !!storedPrefs.penOnly;
   if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
+  if ('pageLock' in storedPrefs) prefs.pageLock = !!storedPrefs.pageLock;
   if (storedPrefs.collapsed && typeof storedPrefs.collapsed === 'object') prefs.collapsed = storedPrefs.collapsed;
 } catch (e) {}
 function savePrefs() {
@@ -884,8 +888,10 @@ function DocViewer(ids) {
     jump: $(ids.jump),
     zoomIn: $(ids.zoomIn),
     zoomOut: $(ids.zoomOut),
-    darkBtn: $(ids.darkBtn)
+    darkBtn: $(ids.darkBtn),
+    lockBtn: $(ids.lockBtn)
   };
+  this.locked = false;
   this.pdf = null;
   this.blob = null;
   this.name = '';
@@ -921,12 +927,17 @@ function DocViewer(ids) {
     savePrefs();
     applyDarkPref();
   });
+  this.els.lockBtn.addEventListener('click', function () {
+    prefs.pageLock = !prefs.pageLock;
+    savePrefs();
+    applyLockPref();
+  });
   this._bindInk();
   this._bindGestures();
 }
 
 DocViewer.prototype.zoomBy = function (f) {
-  if (!this.pdf) return;
+  if (!this.pdf || this.locked) return; // locked page holds its size too
   var z = Math.max(1, Math.min(4, this.zoom * f));
   if (z === this.zoom) return;
   this.zoom = z;
@@ -944,7 +955,7 @@ DocViewer.prototype._bindGestures = function () {
     if (e.pointerType !== 'touch' || !self.pdf) return;
     touches[e.pointerId] = [e.clientX, e.clientY];
     var ids = Object.keys(touches);
-    if (ids.length === 2) {
+    if (ids.length === 2 && !self.locked) { // a locked page doesn't pinch-zoom either
       var a = touches[ids[0]], b = touches[ids[1]];
       startDist = Math.hypot(a[0] - b[0], a[1] - b[1]);
       startZoom = self.zoom;
@@ -994,6 +1005,9 @@ DocViewer.prototype._bindGestures = function () {
      pointer events. A shared cooldown stops double-firing. */
   var swipeCooldownT = 0;
   var edgeState = function () {
+    // locked page: nothing scrolls, so every swipe counts as "at the edge"
+    // and simply turns the page
+    if (self.locked) return { atTop: true, atBottom: true, atLeft: true, atRight: true };
     return {
       atTop: el.scrollTop <= 2,
       atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
@@ -1063,8 +1077,8 @@ DocViewer.prototype._bindGestures = function () {
     if (!self.pdf) return;
     var now = Date.now();
     if (now < wheelCooldown) return;
-    var atTop = el.scrollTop <= 2;
-    var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+    var atTop = self.locked || el.scrollTop <= 2;
+    var atBottom = self.locked || el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
     if (e.deltaY > 20 && atBottom && self.page < self.numPages) {
       wheelCooldown = now + 700;
       self.goto(self.page + 1, false);
@@ -1230,14 +1244,27 @@ DocViewer.prototype._pointerDown = function (e) {
 DocViewer.prototype._pointerMove = function (e) {
   if (this._maybePan) {
     var m = this._maybePan;
-    this._maybePan = null;
     if (this._stylusActive) {
+      this._maybePan = null;
       this._beginStroke(m.pt); // it was the Pencil after all
+    } else if (this.locked) {
+      // finger on a locked page: no panning - a decisive swipe turns the page
+      var ldx = e.clientX - m.x, ldy = e.clientY - m.y;
+      if (Math.abs(ldx) > 60 && Math.abs(ldx) > 2 * Math.abs(ldy)) {
+        this._maybePan = null;
+        this.goto(this.page + (ldx < 0 ? 1 : -1), false);
+      } else if (Math.abs(ldy) > 60 && Math.abs(ldy) > 2 * Math.abs(ldx)) {
+        this._maybePan = null;
+        this.goto(this.page + (ldy < 0 ? 1 : -1), false);
+      }
+      return;
     } else {
+      this._maybePan = null;
       this._pan = { x: m.x, y: m.y, sl: m.sl, st: m.st };
     }
   }
   if (this._pan) {
+    if (this.locked) { this._pan = null; return; }
     this.els.scroll.scrollLeft = this._pan.sl - (e.clientX - this._pan.x);
     this.els.scroll.scrollTop = this._pan.st - (e.clientY - this._pan.y);
     return;
@@ -1463,13 +1490,13 @@ var recViewer = new DocViewer({
   scroll: 'recDocScroll', placeholder: 'recDocPlaceholder', canvas: 'recDocCanvas',
   wrap: 'recCanvasWrap', ink: 'recInkCanvas', inkBar: 'recInkBar',
   nav: 'recDocNav', prev: 'recPgPrev', next: 'recPgNext', ind: 'recPgInd', jump: 'recPgJump',
-  zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn'
+  zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn', lockBtn: 'recLockBtn'
 });
 var playViewer = new DocViewer({
   scroll: 'playDocScroll', placeholder: 'playDocPlaceholder', canvas: 'playDocCanvas',
   wrap: 'playCanvasWrap', ink: 'playInkCanvas', inkBar: 'playInkBar',
   nav: 'playDocNav', prev: 'playPgPrev', next: 'playPgNext', ind: 'playPgInd', jump: 'playPgJump',
-  zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn'
+  zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn', lockBtn: 'playLockBtn'
 });
 recViewer.timeFn = function () { return elapsedNow(); };
 playViewer.timeFn = function () { return $('player').currentTime; };
@@ -1479,6 +1506,22 @@ function applyDarkPref() {
   [recViewer, playViewer].forEach(function (v) {
     v.els.canvas.classList.toggle('page-dark', prefs.darkPage);
     v.els.darkBtn.classList.toggle('toggle-on', prefs.darkPage);
+  });
+}
+
+/* Page lock: the document is frozen in place (no scrolling, no panning,
+   no drift) and any decisive swipe just turns the page. */
+function applyLockPref() {
+  [recViewer, playViewer].forEach(function (v) {
+    v.locked = !!prefs.pageLock;
+    v.els.scroll.classList.toggle('pagelocked', v.locked);
+    if (v.locked) {
+      v.els.scroll.scrollTop = 0;
+      v.els.scroll.scrollLeft = 0;
+      if (v.pdf && v.zoom !== 1) { v.zoom = 1; v.render(); } // lock = whole slide, held still
+    }
+    v.els.lockBtn.classList.toggle('toggle-on', v.locked);
+    v.els.lockBtn.innerHTML = v.locked ? '&#128274; Locked' : '&#128275; Lock';
   });
 }
 
@@ -1495,6 +1538,7 @@ function updateInkBars() {
   });
 }
 applyDarkPref();
+applyLockPref();
 updateInkBars();
 
 /* Hide/Show side panes (transcript, notes) so the document gets the room */
@@ -3074,7 +3118,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784267609706';
+var APP_VERSION = '1784338504911';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
