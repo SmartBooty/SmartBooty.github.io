@@ -41,10 +41,15 @@
     font-size: 19px;
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
+    overflow: hidden; /* the page itself never scrolls - each view scrolls inside */
   }
   h1, h2, h3 { font-family: 'Merriweather', Georgia, serif; color: var(--text); }
 
-  .app { max-width: 1400px; margin: 0 auto; padding: 16px; min-height: 100%; display: flex; flex-direction: column; }
+  .app { max-width: 1400px; margin: 0 auto; padding: 16px; height: 100%; display: flex; flex-direction: column; }
+  /* Each view is its own scroller, and a gesture that empties one never
+     escapes to move the whole app (iPad scroll chaining). */
+  #homeView, #recordView, #playView { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+  #homeView { flex: 1; }
 
   header.bar {
     background: linear-gradient(135deg, #2d5faa, #6b3aad, #b84080);
@@ -186,7 +191,7 @@
     color: var(--blue);
     font-family: 'Inter', system-ui, sans-serif;
   }
-  .pane .scroll { flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; }
+  .pane .scroll { flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; overscroll-behavior: contain; }
   .pane.doc .scroll { padding: 10px; text-align: center; background: var(--deep); border-radius: 0 0 14px 14px; overflow: auto; touch-action: pan-x pan-y; }
   .pane.doc .scroll.pagelocked { overflow: hidden; touch-action: none; }
   .pane.doc canvas { border-radius: 6px; background: #fff; }
@@ -1040,6 +1045,14 @@ DocViewer.prototype._bindGestures = function () {
     if (e.pointerType === 'touch') return;
     trySwipe(e.clientX - st.x, e.clientY - st.y, st.s);
   }, true);
+
+  /* Locked page: swallow the native gesture entirely so the browser can
+     never hand it up the chain and drag the whole app around (iPad WebKit
+     does not reliably honor touch-action here). Swipe detection below
+     still runs - preventDefault does not stop our own listeners. */
+  el.addEventListener('touchmove', function (e) {
+    if (self.locked && e.cancelable) e.preventDefault();
+  }, { passive: false });
 
   var tSwipe = null; // finger path
   el.addEventListener('touchstart', function (e) {
@@ -3118,7 +3131,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784338504911';
+var APP_VERSION = '1784347481534';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
