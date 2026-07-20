@@ -1,6 +1,6 @@
 {
-  "name": "NoteHub",
-  "short_name": "NoteHub",
+  "name": "SmartBooty",
+  "short_name": "SmartBooty",
   "description": "Record lectures, transcribe live, write on slides, and recall it all.",
   "start_url": "./",
   "scope": "./",

@@ -3,13 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>NoteHub - Record, Transcribe, Follow Along</title>
+<title>SmartBooty - Record, Transcribe, Follow Along</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="apple-touch-icon" href="./appletouchicon.png">
 <meta name="theme-color" content="#0c0c14">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="NoteHub">
+<meta name="apple-mobile-web-app-title" content="SmartBooty">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Merriweather:wght@700;900&display=swap" rel="stylesheet">
 <style>
@@ -215,6 +215,22 @@
 
   html, body { overscroll-behavior: none; }
   .canvas-wrap { position: relative; display: inline-block; }
+  .thumb-strip {
+    display: flex; gap: 8px; overflow-x: auto; overscroll-behavior: contain;
+    padding: 8px 10px; background: var(--deep); border-bottom: 1px solid var(--shell-border); flex: 0 0 auto;
+  }
+  .thumb { flex: 0 0 auto; cursor: pointer; text-align: center; }
+  .thumb canvas { width: 76px; display: block; border-radius: 6px; border: 2px solid var(--shell-border); background: #fff; }
+  .thumb.cur canvas { border-color: var(--blue); }
+  .thumb span { font-size: 12px; color: var(--muted); }
+  .thumb.cur span { color: var(--blue); }
+  .slide-text-editor {
+    position: absolute; z-index: 6; transform: translate(-2px, -4px);
+    min-width: 170px; min-height: 46px; max-width: 65%;
+    background: rgba(12, 12, 20, 0.92); border: 2px solid var(--blue); border-radius: 8px;
+    font: 600 17px Inter, system-ui, sans-serif; line-height: 1.3;
+    padding: 6px 9px; resize: none; outline: none;
+  }
   .canvas-wrap canvas.ink {
     position: absolute; left: 0; top: 0;
     background: transparent;
@@ -233,6 +249,8 @@
   }
   .ink-toolbar .lbl { color: var(--muted); font-size: 13px; margin-right: 2px; }
   .ink-toolbar .btn.active-tool { outline: 2px solid var(--gold); filter: brightness(1.15); }
+  .ink-toolbar .preset { min-width: 36px; font-size: 17px; line-height: 1; padding-top: 4px; padding-bottom: 4px; }
+  .ink-toolbar .preset.saved-flash { outline: 2px solid var(--green); }
   .ink-toolbar .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; }
 
   .color-dot { width: 26px; height: 26px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.25); padding: 0; cursor: pointer; flex: 0 0 auto; }
@@ -367,11 +385,11 @@
 
   <header class="bar">
     <div>
-      <h1>NoteHub</h1>
+      <h1>SmartBooty</h1>
       <div class="sub">Record &middot; transcribe &middot; slides + notes synced to the audio</div>
     </div>
     <div id="headerBtns" style="display:flex; gap:8px;">
-      <button class="btn ghost" id="helpBtn" title="How NoteHub works">?</button>
+      <button class="btn ghost" id="helpBtn" title="How SmartBooty works">Tutorial</button>
       <button class="btn ghost" id="homeBtn">All recordings</button>
     </div>
   </header>
@@ -387,7 +405,7 @@
   </div>
   <div class="notice hidden" id="compatNotice" style="border-left-color: var(--red-bg);"></div>
   <div class="notice hidden" id="updateNotice" style="display:flex; align-items:center; gap:12px; justify-content:space-between; flex-wrap:wrap;">
-    <span><strong>Update ready.</strong> A new version of NoteHub is available.</span>
+    <span><strong>Update ready.</strong> A new version of SmartBooty is available.</span>
     <button class="btn blue small" id="updateReload">Reload now</button>
   </div>
   <div class="notice hidden" id="recoverNotice">
@@ -429,6 +447,7 @@
         <button class="btn flag-btn big hidden" id="flagBtn" title="Stamp this moment: professor said it will be on the exam">&#9733; On the exam</button>
         <button class="btn gold hidden" id="pauseBtn">Pause</button>
         <button class="btn red hidden" id="stopBtn">&#9632; Stop &amp; save</button>
+        <button class="btn ghost" id="recClassBtn" title="File this lecture in a class folder">&#128193; Class</button>
       </div>
       <div class="status-line" id="recStatus"></div>
     </div>
@@ -450,6 +469,7 @@
               <span class="ind" id="recPgInd">1 / 1</span>
               <button class="btn ghost tiny" id="recPgNext">&#9654;</button>
               <input class="jump" id="recPgJump" type="number" min="1" title="Go to page">
+              <button class="btn ghost tiny" id="recThumbBtn" title="Show page thumbnails">Pages</button>
               <button class="btn ghost tiny" id="recZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="recZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="recDarkBtn" title="Dark page mode">Dark</button>
@@ -459,6 +479,9 @@
         </div>
         <div class="ink-toolbar hidden" id="recInkBar">
           <span class="lbl">Write:</span>
+          <button class="btn ghost tiny preset" data-preset="0" title="Favorite 1 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
+          <button class="btn ghost tiny preset" data-preset="1" title="Favorite 2 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
+          <button class="btn ghost tiny preset" data-preset="2" title="Favorite 3 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
           <button class="btn ghost tiny" data-tool="pen">&#9998; Pen</button>
           <button class="color-dot" data-color="#3b82f6" style="background:#3b82f6" title="Blue"></button>
           <button class="color-dot" data-color="#e5484d" style="background:#e5484d" title="Red"></button>
@@ -466,11 +489,12 @@
           <button class="color-dot" data-color="#a855f7" style="background:#a855f7" title="Purple"></button>
           <button class="color-dot" data-color="#f5c842" style="background:#f5c842" title="Gold"></button>
           <button class="btn ghost tiny" data-tool="hl"><span class="swatch" style="background:#f5c842"></span>Highlight</button>
+          <button class="btn ghost tiny" data-tool="text" title="Tap the slide to type on it"><b>T</b> Text</button>
           <button class="btn ghost tiny" data-tool="erase">Eraser</button>
           <button class="btn ghost tiny" data-act="undo">Undo</button>
-          <button class="btn ghost tiny" data-act="redo">Redo</button>
           <button class="btn ghost tiny" data-act="penonly" title="Only the Apple Pencil draws; fingers scroll">Pencil only</button>
         </div>
+        <div class="thumb-strip hidden" id="recThumbStrip"></div>
         <div class="scroll" id="recDocScroll">
           <div class="doc-placeholder" id="recDocPlaceholder">
             <button class="btn blue big" id="recDocAttachBig">&#43; Attach chapter PDF / slides</button>
@@ -503,7 +527,7 @@
       <div style="display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
         <h2 style="font-size:21px;"><span id="playTitle" contenteditable="true" spellcheck="false" style="outline:none; border-bottom:1px dashed var(--shell-border);"></span> <span style="color:var(--muted); font-size:15px;" title="Tap the name to rename">&#9998;</span></h2>
         <div style="display:flex; gap:8px; flex-wrap:wrap;">
-          <button class="btn ghost small" id="courseBtn" title="Tag this recording with a course">Course</button>
+          <button class="btn ghost small" id="courseBtn" title="File this recording in a class folder">&#128193; Class</button>
           <button class="btn gold small" id="recallBtn">&#9889; Recall</button>
           <button class="btn ghost small" id="backupBtn">Back up (.notehub)</button>
           <button class="btn ghost small" id="exportAudioBtn">Download audio</button>
@@ -548,6 +572,7 @@
               <span class="ind" id="playPgInd">1 / 1</span>
               <button class="btn ghost tiny" id="playPgNext">&#9654;</button>
               <input class="jump" id="playPgJump" type="number" min="1" title="Go to page">
+              <button class="btn ghost tiny" id="playThumbBtn" title="Show page thumbnails">Pages</button>
               <button class="btn ghost tiny" id="playZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="playZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="playDarkBtn" title="Dark page mode">Dark</button>
@@ -557,6 +582,9 @@
         </div>
         <div class="ink-toolbar hidden" id="playInkBar">
           <span class="lbl">Write:</span>
+          <button class="btn ghost tiny preset" data-preset="0" title="Favorite 1 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
+          <button class="btn ghost tiny preset" data-preset="1" title="Favorite 2 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
+          <button class="btn ghost tiny preset" data-preset="2" title="Favorite 3 &mdash; one tap to grab it. Hold it down to save your current pen here"></button>
           <button class="btn ghost tiny" data-tool="pen">&#9998; Pen</button>
           <button class="color-dot" data-color="#3b82f6" style="background:#3b82f6" title="Blue"></button>
           <button class="color-dot" data-color="#e5484d" style="background:#e5484d" title="Red"></button>
@@ -564,11 +592,12 @@
           <button class="color-dot" data-color="#a855f7" style="background:#a855f7" title="Purple"></button>
           <button class="color-dot" data-color="#f5c842" style="background:#f5c842" title="Gold"></button>
           <button class="btn ghost tiny" data-tool="hl"><span class="swatch" style="background:#f5c842"></span>Highlight</button>
+          <button class="btn ghost tiny" data-tool="text" title="Tap the slide to type on it"><b>T</b> Text</button>
           <button class="btn ghost tiny" data-tool="erase">Eraser</button>
           <button class="btn ghost tiny" data-act="undo">Undo</button>
-          <button class="btn ghost tiny" data-act="redo">Redo</button>
           <button class="btn ghost tiny" data-act="penonly" title="Only the Apple Pencil draws; fingers scroll">Pencil only</button>
         </div>
+        <div class="thumb-strip hidden" id="playThumbStrip"></div>
         <div class="scroll" id="playDocScroll">
           <div class="doc-placeholder" id="playDocPlaceholder">No document attached to this recording.</div>
           <div class="canvas-wrap hidden" id="playCanvasWrap">
@@ -779,7 +808,8 @@ function liveMetaFlush() {
     notes: notes,
     pageMarks: rec.pageMarks,
     ink: rec.ink,
-    flags: rec.flags
+    flags: rec.flags,
+    course: rec.course || ''
   });
 }
 function recoverLiveSession() {
@@ -806,6 +836,7 @@ function recoverLiveSession() {
       pageMarks: meta.pageMarks || [],
       ink: meta.ink || {},
       flags: meta.flags || [],
+      course: meta.course || '',
       doc: docRec ? { name: docRec.name, blob: docRec.blob, pages: docRec.pages } : null
     };
     return dbPut(session).then(liveClear).then(function () { return true; });
@@ -864,7 +895,13 @@ var INK_TOOLS = {
 
 /* Global preferences, persisted across sessions. Pencil-only defaults ON:
    pens (Apple Pencil, Windows pen) and the mouse draw; fingers scroll. */
-var prefs = { penColor: '#3b82f6', hlColor: '#f5c842', penOnly: true, darkPage: false, pageLock: false, collapsed: {} };
+var prefs = { penColor: '#3b82f6', hlColor: '#f5c842', penOnly: true, darkPage: false, pageLock: false, lastCourse: '', collapsed: {},
+  // one-tap favorite pens: tool + color pairs, hold a slot to overwrite it
+  presets: [
+    { tool: 'pen', color: '#3b82f6' },
+    { tool: 'hl', color: '#f5c842' },
+    { tool: 'pen', color: '#e5484d' }
+  ] };
 try {
   var storedPrefs = JSON.parse(localStorage.getItem('lecturescribe_prefs') || '{}');
   if (typeof storedPrefs.penColor === 'string') prefs.penColor = storedPrefs.penColor;
@@ -872,6 +909,12 @@ try {
   if ('penOnly' in storedPrefs) prefs.penOnly = !!storedPrefs.penOnly;
   if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
   if ('pageLock' in storedPrefs) prefs.pageLock = !!storedPrefs.pageLock;
+  if (typeof storedPrefs.lastCourse === 'string') prefs.lastCourse = storedPrefs.lastCourse;
+  if (Array.isArray(storedPrefs.presets)) {
+    storedPrefs.presets.slice(0, 3).forEach(function (p, i) {
+      if (p && (p.tool === 'pen' || p.tool === 'hl') && typeof p.color === 'string') prefs.presets[i] = { tool: p.tool, color: p.color };
+    });
+  }
   if (storedPrefs.collapsed && typeof storedPrefs.collapsed === 'object') prefs.collapsed = storedPrefs.collapsed;
 } catch (e) {}
 function savePrefs() {
@@ -894,7 +937,9 @@ function DocViewer(ids) {
     zoomIn: $(ids.zoomIn),
     zoomOut: $(ids.zoomOut),
     darkBtn: $(ids.darkBtn),
-    lockBtn: $(ids.lockBtn)
+    lockBtn: $(ids.lockBtn),
+    thumbBtn: $(ids.thumbBtn),
+    thumbStrip: $(ids.thumbStrip)
   };
   this.locked = false;
   this.pdf = null;
@@ -908,7 +953,6 @@ function DocViewer(ids) {
   this.onInkChange = null;
   this.timeFn = null;       // returns the current timeline position for stroke stamps
   this.inkStore = null;
-  this._redoStore = {}; // popped strokes waiting for Redo, keyed per page
   this.tool = null;
   this._stroke = null;
   this._erasing = false;
@@ -937,6 +981,7 @@ function DocViewer(ids) {
     savePrefs();
     applyLockPref();
   });
+  this.els.thumbBtn.addEventListener('click', function () { self.toggleThumbs(); });
   this._bindInk();
   this._bindGestures();
 }
@@ -1139,13 +1184,7 @@ DocViewer.prototype.searchText = function (q) {
 
 DocViewer.prototype.setInkStore = function (store) {
   this.inkStore = store;
-  this._redoStore = {}; // a fresh document means nothing to redo
   this.drawInk();
-};
-DocViewer.prototype._redo = function () {
-  var k = 'p' + this.page;
-  if (!this._redoStore[k]) this._redoStore[k] = [];
-  return this._redoStore[k];
 };
 DocViewer.prototype._strokes = function () {
   if (!this.inkStore) return null;
@@ -1167,8 +1206,16 @@ DocViewer.prototype._bindInk = function () {
   self.els.inkBar.addEventListener('click', function (e) {
     var b = e.target.closest('button');
     if (!b) return;
+    if (b.dataset.preset !== undefined) {
+      if (b._lpFired) { b._lpFired = false; return; } // the hold already saved; this click is its echo
+      var p = prefs.presets[parseInt(b.dataset.preset, 10)];
+      if (!p) return;
+      if (p.tool === 'hl') prefs.hlColor = p.color; else prefs.penColor = p.color;
+      savePrefs();
+      self.setTool(p.tool);
+      return;
+    }
     if (b.dataset.act === 'undo') { self.undoInk(); return; }
-    if (b.dataset.act === 'redo') { self.redoInk(); return; }
     if (b.dataset.act === 'penonly') {
       prefs.penOnly = !prefs.penOnly;
       savePrefs();
@@ -1189,6 +1236,33 @@ DocViewer.prototype._bindInk = function () {
     var t = b.dataset.tool;
     self.setTool(self.tool === t ? null : t); // tap the active tool again to put the pen down
   });
+  /* Holding a favorite slot saves whatever pen you're holding into it. */
+  var presetBtns = self.els.inkBar.querySelectorAll('button[data-preset]');
+  for (var pi = 0; pi < presetBtns.length; pi++) {
+    (function (b) {
+      var timer = null;
+      b.addEventListener('pointerdown', function () {
+        b._lpFired = false;
+        timer = setTimeout(function () {
+          if (!self.tool || self.tool === 'erase') return; // nothing worth saving
+          b._lpFired = true;
+          prefs.presets[parseInt(b.dataset.preset, 10)] = {
+            tool: self.tool,
+            color: self.tool === 'hl' ? prefs.hlColor : prefs.penColor
+          };
+          savePrefs();
+          updateInkBars();
+          b.classList.add('saved-flash');
+          setTimeout(function () { b.classList.remove('saved-flash'); }, 700);
+        }, 600);
+      });
+      var cancel = function () { clearTimeout(timer); };
+      b.addEventListener('pointerup', cancel);
+      b.addEventListener('pointerleave', cancel);
+      b.addEventListener('pointercancel', cancel);
+      b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    })(presetBtns[pi]);
+  }
   var ic = self.els.ink;
   ic.addEventListener('pointerdown', function (e) { self._pointerDown(e); });
   ic.addEventListener('pointermove', function (e) { self._pointerMove(e); });
@@ -1234,13 +1308,103 @@ DocViewer.prototype._beginStroke = function (pt) {
     this._stroke = { tool: this.tool, t: this.timeFn ? this.timeFn() : 0, points: [pt] };
     if (this.tool === 'pen') this._stroke.color = prefs.penColor;
     else if (this.tool === 'hl') this._stroke.color = prefs.hlColor;
+    this._lastSigPt = pt;
+    this._lastInkMoveT = performance.now();
   }
 };
+
+/* ---- shape snapping: draw a rough shape, hold still a beat, release ----
+   Straightens lines (with horizontal/vertical magnetism), rounds circles/
+   ellipses, squares up rectangles, and cleans simple polylines. Fast
+   strokes never snap, so handwriting is untouched. */
+function distN(a, b) { return Math.hypot(a[0] - b[0], a[1] - b[1]); }
+function rdpSimplify(pts, eps) {
+  if (pts.length < 3) return pts.slice();
+  var a = pts[0], b = pts[pts.length - 1];
+  var dx = b[0] - a[0], dy = b[1] - a[1];
+  var len = Math.hypot(dx, dy) || 1e-9;
+  var maxD = -1, idx = -1;
+  for (var i = 1; i < pts.length - 1; i++) {
+    var d = Math.abs(dy * pts[i][0] - dx * pts[i][1] + b[0] * a[1] - b[1] * a[0]) / len;
+    if (d > maxD) { maxD = d; idx = i; }
+  }
+  if (maxD <= eps) return [a, b];
+  var left = rdpSimplify(pts.slice(0, idx + 1), eps);
+  return left.slice(0, -1).concat(rdpSimplify(pts.slice(idx), eps));
+}
+function snapInkShape(pts) {
+  if (pts.length < 6) return null;
+  var minX = 1, minY = 1, maxX = 0, maxY = 0;
+  for (var i = 0; i < pts.length; i++) {
+    var p = pts[i];
+    if (p[0] < minX) minX = p[0];
+    if (p[0] > maxX) maxX = p[0];
+    if (p[1] < minY) minY = p[1];
+    if (p[1] > maxY) maxY = p[1];
+  }
+  var w = maxX - minX, h = maxY - minY;
+  var size = Math.max(w, h);
+  if (size < 0.02) return null; // too tiny to be a deliberate shape
+  var closed = distN(pts[0], pts[pts.length - 1]) < 0.3 * size;
+
+  // ellipse / circle: closed, not skinny, consistently round
+  if (closed && Math.min(w, h) > 0.3 * size) {
+    var cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    var rx = w / 2 || 1e-9, ry = h / 2 || 1e-9;
+    var dev = 0;
+    for (i = 0; i < pts.length; i++) {
+      dev += Math.abs(Math.hypot((pts[i][0] - cx) / rx, (pts[i][1] - cy) / ry) - 1);
+    }
+    if (dev / pts.length < 0.16) {
+      var ell = [];
+      for (i = 0; i <= 40; i++) {
+        var ang = i / 40 * Math.PI * 2;
+        ell.push([cx + rx * Math.cos(ang), cy + ry * Math.sin(ang)]);
+      }
+      return { points: ell, shape: 'ellipse' };
+    }
+  }
+
+  var simp = rdpSimplify(pts, 0.05 * size);
+
+  if (!closed && simp.length === 2) {
+    var a = simp[0].slice(), b = simp[1].slice();
+    var adx = Math.abs(b[0] - a[0]), ady = Math.abs(b[1] - a[1]);
+    if (ady < 0.12 * adx) { var my = (a[1] + b[1]) / 2; a[1] = my; b[1] = my; } // near-horizontal
+    else if (adx < 0.12 * ady) { var mx = (a[0] + b[0]) / 2; a[0] = mx; b[0] = mx; } // near-vertical
+    return { points: [a, b], shape: 'line' };
+  }
+
+  if (closed && simp.length >= 4 && simp.length <= 6) {
+    var area = 0;
+    for (i = 0; i < simp.length - 1; i++) {
+      area += simp[i][0] * simp[i + 1][1] - simp[i + 1][0] * simp[i][1];
+    }
+    area = Math.abs(area) / 2;
+    if (w * h > 0 && area / (w * h) > 0.72) {
+      // fills its bounding box: square it up
+      return {
+        points: [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]],
+        shape: 'rect'
+      };
+    }
+    return { points: simp.slice(0, -1).concat([[simp[0][0], simp[0][1]]]), shape: 'poly' }; // e.g. a triangle
+  }
+
+  if (!closed && simp.length <= 5) return { points: simp, shape: 'poly' }; // straightened zig-zag / arrow-ish
+
+  return null; // looks like handwriting - leave it alone
+}
 DocViewer.prototype._pointerDown = function (e) {
   if (!this.tool || !this.pdf || !this.inkStore) return;
   e.preventDefault();
   try { this.els.ink.setPointerCapture(e.pointerId); } catch (err) {}
   var pt = this._norm(e);
+  if (this.tool === 'text') {
+    // any pointer places text - a tap, not a stroke
+    this._textTap = { pt: pt, x: e.clientX, y: e.clientY };
+    return;
+  }
   var penLike = e.pointerType === 'pen' || e.pointerType === 'mouse' || this._stylusActive;
   if (prefs.penOnly && !penLike) {
     // Could be a finger (should pan) - or the Apple Pencil in a browser that
@@ -1255,6 +1419,12 @@ DocViewer.prototype._pointerDown = function (e) {
   this._beginStroke(pt);
 };
 DocViewer.prototype._pointerMove = function (e) {
+  if (this.tool === 'text') {
+    if (this._textTap && Math.hypot(e.clientX - this._textTap.x, e.clientY - this._textTap.y) > 12) {
+      this._textTap = null; // it turned into a drag, not a tap
+    }
+    return;
+  }
   if (this._maybePan) {
     var m = this._maybePan;
     if (this._stylusActive) {
@@ -1295,13 +1465,28 @@ DocViewer.prototype._pointerMove = function (e) {
     if (Math.abs(pt[0] - last[0]) + Math.abs(pt[1] - last[1]) < 0.0015) continue;
     pts.push(pt);
     this._drawSegment(this._stroke, last, pt);
+    // real movement (beyond hand jitter) resets the hold-still clock for shape snapping
+    if (!this._lastSigPt || distN(pt, this._lastSigPt) > 0.006) {
+      this._lastSigPt = pt;
+      this._lastInkMoveT = performance.now();
+    }
   }
 };
 DocViewer.prototype._pointerUp = function () {
+  if (this._textTap) {
+    var tap = this._textTap;
+    this._textTap = null;
+    this._handleTextTap(tap.pt);
+    return;
+  }
   if (this._stroke) {
     if (this._stroke.points.length > 1) {
+      // held still at the end of the stroke? try to snap it into a clean shape
+      if (performance.now() - (this._lastInkMoveT || 0) > 350) {
+        var snap = snapInkShape(this._stroke.points);
+        if (snap) { this._stroke.points = snap.points; this._stroke.shape = snap.shape; }
+      }
       this._strokes().push(this._stroke);
-      this._redo().length = 0; // drawing something new forks history: redo is gone
       if (this.onInkChange) this.onInkChange();
     }
     this._stroke = null;
@@ -1311,6 +1496,66 @@ DocViewer.prototype._pointerUp = function () {
   this._pan = null;
   this._maybePan = null;
 };
+/* ---- text on the slide: tap with the T tool to type; tap a text you
+   already placed to edit it. Stored with the ink, so it saves, replays,
+   erases, undoes, and exports exactly like handwriting. ---- */
+DocViewer.prototype._handleTextTap = function (pt) {
+  var arr = this._strokes();
+  if (!arr) return;
+  for (var i = arr.length - 1; i >= 0; i--) {
+    var s = arr[i];
+    if (s.tool !== 'text' || !s.points || !s.points.length) continue;
+    var ax = s.points[0][0], ay = s.points[0][1];
+    var lines = String(s.text || '').split('\n').length;
+    if (pt[0] >= ax - 0.02 && pt[0] <= ax + 0.4 && pt[1] >= ay - 0.02 && pt[1] <= ay + 0.045 * lines) {
+      arr.splice(i, 1); // lift it into the editor
+      this.drawInk();
+      this._openTextEditor(s.points[0], s);
+      return;
+    }
+  }
+  this._openTextEditor(pt, null);
+};
+DocViewer.prototype._openTextEditor = function (pt, existing) {
+  var self = this;
+  this._closeTextEditor(true);
+  var ta = document.createElement('textarea');
+  ta.className = 'slide-text-editor';
+  ta.value = existing ? existing.text : '';
+  ta.style.left = (pt[0] * 100) + '%';
+  ta.style.top = (pt[1] * 100) + '%';
+  ta.style.color = (existing && existing.color) || prefs.penColor;
+  this.els.wrap.appendChild(ta);
+  this._textEditor = { ta: ta, pt: pt, existing: existing || null };
+  setTimeout(function () { ta.focus(); }, 30);
+  ta.addEventListener('blur', function () { self._closeTextEditor(true); });
+  ta.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); self._closeTextEditor(false); }
+    e.stopPropagation(); // typing here must not trigger app shortcuts
+  });
+};
+DocViewer.prototype._closeTextEditor = function (commit) {
+  var ed = this._textEditor;
+  if (!ed) return;
+  this._textEditor = null;
+  var text = ed.ta.value.replace(/\s+$/, '');
+  ed.ta.remove();
+  var arr = this._strokes();
+  if (!arr) return;
+  if (commit && text) {
+    arr.push({
+      tool: 'text', text: text,
+      color: (ed.existing && ed.existing.color) || prefs.penColor,
+      points: [ed.pt],
+      t: (ed.existing && typeof ed.existing.t === 'number') ? ed.existing.t : (this.timeFn ? this.timeFn() : 0)
+    });
+  } else if (!commit && ed.existing) {
+    arr.push(ed.existing); // Escape puts the original back untouched
+  }
+  this.drawInk();
+  if (this.onInkChange) this.onInkChange();
+};
+
 DocViewer.prototype._eraseAt = function (pt) {
   var arr = this._strokes();
   if (!arr || !arr.length) return;
@@ -1324,7 +1569,6 @@ DocViewer.prototype._eraseAt = function (pt) {
     }
   }
   if (arr.length !== before) {
-    this._redo().length = 0;
     this.drawInk();
     if (this.onInkChange) this.onInkChange();
   }
@@ -1332,15 +1576,7 @@ DocViewer.prototype._eraseAt = function (pt) {
 DocViewer.prototype.undoInk = function () {
   var arr = this._strokes();
   if (!arr || !arr.length) return;
-  this._redo().push(arr.pop());
-  this.drawInk();
-  if (this.onInkChange) this.onInkChange();
-};
-DocViewer.prototype.redoInk = function () {
-  var arr = this._strokes();
-  var redo = this._redo();
-  if (!arr || !redo.length) return;
-  arr.push(redo.pop());
+  arr.pop();
   this.drawInk();
   if (this.onInkChange) this.onInkChange();
 };
@@ -1367,7 +1603,24 @@ DocViewer.prototype.drawInk = function () {
   ctx.clearRect(0, 0, ic.width, ic.height);
   var arr = this.inkStore ? (this.inkStore['p' + this.page] || []) : [];
   for (var i = 0; i < arr.length; i++) {
-    var stroke = arr[i], cfg = INK_TOOLS[stroke.tool];
+    var stroke = arr[i];
+    if (stroke.tool === 'text') {
+      var talpha = 1;
+      if (this.replayT !== null && typeof stroke.t === 'number' && stroke.t > this.replayT + 0.05) talpha = 0.15;
+      var tsize = Math.max(12, 0.024 * ic.width);
+      ctx.save();
+      ctx.globalAlpha = talpha;
+      ctx.fillStyle = stroke.color || '#3b82f6';
+      ctx.font = '600 ' + tsize + 'px Inter, system-ui, sans-serif';
+      ctx.textBaseline = 'top';
+      var tlines = String(stroke.text || '').split('\n');
+      for (var li = 0; li < tlines.length; li++) {
+        ctx.fillText(tlines[li], stroke.points[0][0] * ic.width, stroke.points[0][1] * ic.height + li * tsize * 1.3);
+      }
+      ctx.restore();
+      continue;
+    }
+    var cfg = INK_TOOLS[stroke.tool];
     if (!cfg || stroke.points.length < 2) continue;
     var alpha = cfg.alpha;
     // ink replay: while the audio plays, strokes from later in the lecture
@@ -1437,6 +1690,63 @@ DocViewer.prototype.goto = function (n, silent) {
 };
 DocViewer.prototype.updateInd = function () {
   this.els.ind.textContent = this.page + ' / ' + this.numPages;
+  this._markThumb();
+};
+
+/* ---- page thumbnail strip: tap Pages, tap a thumbnail to jump ---- */
+DocViewer.prototype.toggleThumbs = function () {
+  var strip = this.els.thumbStrip;
+  var show = strip.classList.contains('hidden') && !!this.pdf;
+  strip.classList.toggle('hidden', !show);
+  this.els.thumbBtn.classList.toggle('toggle-on', show);
+  if (show) this._renderThumbs();
+};
+DocViewer.prototype._renderThumbs = function () {
+  var self = this;
+  var strip = self.els.thumbStrip;
+  if (!self.pdf) return;
+  if (self._thumbsFor === self.pdf && strip.children.length === self.numPages) { self._markThumb(); return; }
+  self._thumbsFor = self.pdf;
+  strip.innerHTML = '';
+  var chain = Promise.resolve();
+  var mk = function (n) {
+    var d = document.createElement('div');
+    d.className = 'thumb';
+    d.dataset.page = n;
+    var c = document.createElement('canvas');
+    d.appendChild(c);
+    var lbl = document.createElement('span');
+    lbl.textContent = n;
+    d.appendChild(lbl);
+    d.addEventListener('click', function () { self.goto(n, false); });
+    strip.appendChild(d);
+    return c;
+  };
+  for (var i = 1; i <= self.numPages; i++) {
+    (function (n) {
+      var c = mk(n);
+      chain = chain.then(function () {
+        if (self._thumbsFor !== self.pdf) return; // a new doc arrived mid-render
+        return self.pdf.getPage(n).then(function (pg) {
+          var vp = pg.getViewport({ scale: 1 });
+          var v2 = pg.getViewport({ scale: 152 / vp.width }); // 2x the 76px CSS width, stays crisp
+          c.width = v2.width; c.height = v2.height;
+          return pg.render({ canvasContext: c.getContext('2d'), viewport: v2 }).promise;
+        });
+      });
+    })(i);
+  }
+  self._markThumb();
+};
+DocViewer.prototype._markThumb = function () {
+  var strip = this.els.thumbStrip;
+  if (!strip || strip.classList.contains('hidden')) return;
+  var kids = strip.children;
+  for (var i = 0; i < kids.length; i++) {
+    var on = parseInt(kids[i].dataset.page, 10) === this.page;
+    kids[i].classList.toggle('cur', on);
+    if (on) strip.scrollLeft = kids[i].offsetLeft - strip.clientWidth / 2 + kids[i].offsetWidth / 2;
+  }
 };
 DocViewer.prototype.render = function () {
   var self = this;
@@ -1476,6 +1786,7 @@ DocViewer.prototype.render = function () {
   });
 };
 DocViewer.prototype.reset = function () {
+  if (this._closeTextEditor) this._closeTextEditor(true);
   this.pdf = null;
   this.blob = null;
   this.name = '';
@@ -1484,7 +1795,6 @@ DocViewer.prototype.reset = function () {
   this.zoom = 1;
   this.replayT = null;
   this.inkStore = null;
-  this._redoStore = {};
   this._stroke = null;
   this._erasing = false;
   this._pan = null;
@@ -1497,19 +1807,25 @@ DocViewer.prototype.reset = function () {
   this.els.inkBar.classList.add('hidden');
   this.els.nav.classList.add('hidden');
   this.els.placeholder.classList.remove('hidden');
+  this.els.thumbStrip.classList.add('hidden');
+  this.els.thumbStrip.innerHTML = '';
+  this.els.thumbBtn.classList.remove('toggle-on');
+  this._thumbsFor = null;
 };
 
 var recViewer = new DocViewer({
   scroll: 'recDocScroll', placeholder: 'recDocPlaceholder', canvas: 'recDocCanvas',
   wrap: 'recCanvasWrap', ink: 'recInkCanvas', inkBar: 'recInkBar',
   nav: 'recDocNav', prev: 'recPgPrev', next: 'recPgNext', ind: 'recPgInd', jump: 'recPgJump',
-  zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn', lockBtn: 'recLockBtn'
+  zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn', lockBtn: 'recLockBtn',
+  thumbBtn: 'recThumbBtn', thumbStrip: 'recThumbStrip'
 });
 var playViewer = new DocViewer({
   scroll: 'playDocScroll', placeholder: 'playDocPlaceholder', canvas: 'playDocCanvas',
   wrap: 'playCanvasWrap', ink: 'playInkCanvas', inkBar: 'playInkBar',
   nav: 'playDocNav', prev: 'playPgPrev', next: 'playPgNext', ind: 'playPgInd', jump: 'playPgJump',
-  zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn', lockBtn: 'playLockBtn'
+  zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn', lockBtn: 'playLockBtn',
+  thumbBtn: 'playThumbBtn', thumbStrip: 'playThumbStrip'
 });
 recViewer.timeFn = function () { return elapsedNow(); };
 playViewer.timeFn = function () { return $('player').currentTime; };
@@ -1548,6 +1864,16 @@ function updateInkBars() {
     }
     var po = v.els.inkBar.querySelector('[data-act="penonly"]');
     if (po) po.classList.toggle('toggle-on', prefs.penOnly);
+    var pbs = v.els.inkBar.querySelectorAll('button[data-preset]');
+    for (var i = 0; i < pbs.length; i++) {
+      var p = prefs.presets[i];
+      if (!p) continue;
+      pbs[i].innerHTML = p.tool === 'hl'
+        ? '<span class="swatch" style="background:' + p.color + '; margin-right:0;"></span>'
+        : '<span style="color:' + p.color + '">&#9998;</span>';
+      var current = v.tool === p.tool && (p.tool === 'hl' ? prefs.hlColor : prefs.penColor) === p.color;
+      pbs[i].classList.toggle('active-tool', current);
+    }
   });
 }
 applyDarkPref();
@@ -1711,6 +2037,8 @@ function prepareRecording() {
   rec.notes = [];
   rec.pageMarks = [];
   rec.flags = [];
+  rec.course = prefs.lastCourse || ''; // lectures file into the same class folder as last time
+  updateRecClassBtn();
   $('liveTranscript').innerHTML = '';
   $('liveNotes').innerHTML = '';
   $('recTimer').textContent = '00:00';
@@ -1869,6 +2197,7 @@ function stopRecording() {
       pageMarks: rec.pageMarks.slice(),
       ink: rec.ink || {},
       flags: rec.flags.slice(),
+      course: rec.course || '',
       doc: recViewer.pdf ? { name: recViewer.name, blob: recViewer.blob, pages: recViewer.numPages } : null
     };
     dbPut(session).then(function () {
@@ -2088,26 +2417,34 @@ function commitPendingNote() {
 }
 
 /* ================= home / session list ================= */
-var homeCourseFilter = ''; // '' = show every course
+var homeCourseFilter = ''; // '' = every folder, '__unfiled__' = untagged only
 function renderCourseChips(sessions) {
   var chips = $('courseChips');
-  var courses = [];
+  var counts = {};
+  var unfiled = 0;
   sessions.forEach(function (s) {
     var c = (s.course || '').trim();
-    if (c && courses.indexOf(c) === -1) courses.push(c);
+    if (c) counts[c] = (counts[c] || 0) + 1; else unfiled++;
   });
-  courses.sort();
-  if (homeCourseFilter && courses.indexOf(homeCourseFilter) === -1) homeCourseFilter = '';
+  var courses = Object.keys(counts).sort();
+  if (homeCourseFilter === '__unfiled__') {
+    if (!unfiled) homeCourseFilter = '';
+  } else if (homeCourseFilter && courses.indexOf(homeCourseFilter) === -1) {
+    homeCourseFilter = '';
+  }
   if (!courses.length) { chips.classList.add('hidden'); chips.innerHTML = ''; return; }
   chips.classList.remove('hidden');
   chips.innerHTML = '';
-  [''].concat(courses).forEach(function (c) {
+  var mk = function (val, label) {
     var b = document.createElement('button');
-    b.className = 'chip' + (homeCourseFilter === c ? ' active' : '');
-    b.textContent = c || 'All courses';
-    b.addEventListener('click', function () { homeCourseFilter = c; renderHome(); });
+    b.className = 'chip' + (homeCourseFilter === val ? ' active' : '');
+    b.innerHTML = label;
+    b.addEventListener('click', function () { homeCourseFilter = val; renderHome(); });
     chips.appendChild(b);
-  });
+  };
+  mk('', '&#128194; All &middot; ' + sessions.length);
+  courses.forEach(function (c) { mk(c, '&#128193; ' + esc(c) + ' &middot; ' + counts[c]); });
+  if (unfiled) mk('__unfiled__', '&#128193; Unfiled &middot; ' + unfiled);
 }
 function renderHome() {
   updateStorageInfo();
@@ -2118,13 +2455,16 @@ function renderHome() {
     renderCourseChips(sessions);
     if (!sessions.length) {
       box.innerHTML = '<div class="empty">No recordings yet. Hit <b>New recording</b> when class starts.<br>' +
-        '<span style="font-size:15px;">New here? Tap the <b>?</b> button up top for a 30-second tour.</span></div>';
+        '<span style="font-size:15px;">New here? Tap <b>Tutorial</b> up top for a 30-second tour.</span></div>';
       return;
     }
     if (homeCourseFilter) {
-      sessions = sessions.filter(function (s) { return (s.course || '').trim() === homeCourseFilter; });
+      sessions = sessions.filter(function (s) {
+        var c = (s.course || '').trim();
+        return homeCourseFilter === '__unfiled__' ? !c : c === homeCourseFilter;
+      });
       if (!sessions.length) {
-        box.innerHTML = '<div class="empty">No recordings tagged ' + esc(homeCourseFilter) + ' yet.</div>';
+        box.innerHTML = '<div class="empty">This folder is empty.</div>';
         return;
       }
     }
@@ -2428,7 +2768,7 @@ function buildStudyMarkdown(s) {
   lines.push('- Recorded: ' + new Date(s.created).toLocaleString());
   lines.push('- Length: ' + fmt(s.duration));
   if (s.doc) lines.push('- Document followed: ' + s.doc.name + ' (' + s.doc.pages + ' pages; p. numbers below refer to it)');
-  lines.push('- Captured with NoteHub. Timestamps are minutes:seconds from the start of the recording.');
+  lines.push('- Captured with SmartBooty. Timestamps are minutes:seconds from the start of the recording.');
   lines.push('- For AutoStudy: treat the transcript below as the transcribed class audio for this lecture.');
   lines.push('');
 
@@ -2545,6 +2885,7 @@ function exportBackup() {
     name: s.name, created: s.created, duration: s.duration, mime: s.mime,
     transcript: s.transcript || [], notes: s.notes || [],
     pageMarks: s.pageMarks || [], ink: s.ink || {}, flags: s.flags || [],
+    course: s.course || '',
     audioSize: s.audio.size,
     doc: s.doc ? { name: s.doc.name, pages: s.doc.pages, size: s.doc.blob.size } : null
   };
@@ -2561,7 +2902,7 @@ function exportBackup() {
 function importBackup(file) {
   file.slice(0, 8).arrayBuffer().then(function (buf) {
     var dv = new DataView(buf);
-    if (dv.getUint32(0) !== NHB_MAGIC) throw new Error('not a NoteHub backup file');
+    if (dv.getUint32(0) !== NHB_MAGIC) throw new Error('not a SmartBooty backup file');
     var mlen = dv.getUint32(4);
     return file.slice(8, 8 + mlen).text().then(function (mjson) {
       var meta = JSON.parse(mjson);
@@ -2584,6 +2925,7 @@ function importBackup(file) {
         pageMarks: meta.pageMarks || [],
         ink: meta.ink || {},
         flags: meta.flags || [],
+        course: meta.course || '',
         doc: doc
       };
       return dbPut(session);
@@ -2625,6 +2967,23 @@ function exportMarkedPdf() {
       var pg = pages[idx];
       var w = pg.getWidth(), h = pg.getHeight();
       ink[k].forEach(function (stroke) {
+        if (stroke.tool === 'text' && stroke.text && stroke.points && stroke.points.length) {
+          var size = Math.max(8, 0.024 * w);
+          // the built-in PDF font only speaks Latin - swap anything else out
+          var safe = String(stroke.text).replace(/[^\n\x20-\x7E\u00A0-\u00FF]/g, '?');
+          safe.split('\n').forEach(function (ln, li) {
+            if (!ln) return;
+            try {
+              pg.drawText(ln, {
+                x: stroke.points[0][0] * w,
+                y: h - stroke.points[0][1] * h - size * (li + 1) * 1.05,
+                size: size,
+                color: hexToRgb01(stroke.color || '#3b82f6')
+              });
+            } catch (e) { console.error('text export skipped a line', e); }
+          });
+          return;
+        }
         var cfg = INK_TOOLS[stroke.tool];
         if (!cfg || !stroke.points || stroke.points.length < 2) return;
         var pts = stroke.points;
@@ -2962,6 +3321,19 @@ $('playFollowBtn').addEventListener('click', function () {
 
 /* ================= wiring ================= */
 $('newRecBtn').addEventListener('click', prepareRecording);
+function updateRecClassBtn() {
+  var c = (rec.course || '').trim();
+  $('recClassBtn').innerHTML = c ? '&#128193; ' + esc(c) : '&#128193; Class';
+}
+$('recClassBtn').addEventListener('click', function () {
+  var v = prompt('Which class folder should this lecture save into? (e.g. NUR105, NUR106, BIO301)\nLeave blank for no folder:', rec.course || prefs.lastCourse || '');
+  if (v === null) return;
+  rec.course = v.trim();
+  prefs.lastCourse = rec.course; // next lecture defaults to the same class
+  savePrefs();
+  updateRecClassBtn();
+  liveMetaFlush(); // keep the crash-recovery copy current
+});
 $('startBtn').addEventListener('click', beginRecording);
 $('pauseBtn').addEventListener('click', togglePause);
 $('stopBtn').addEventListener('click', stopRecording);
@@ -3013,12 +3385,12 @@ $('importFile').addEventListener('change', function () {
 });
 function updateCourseBtn() {
   var c = play.session && (play.session.course || '').trim();
-  $('courseBtn').textContent = c ? c : 'Course';
-  $('courseBtn').title = c ? 'Course: ' + c + ' (tap to change)' : 'Tag this recording with a course';
+  $('courseBtn').innerHTML = c ? '&#128193; ' + esc(c) : '&#128193; Class';
+  $('courseBtn').title = c ? 'Class folder: ' + c + ' (tap to move it)' : 'File this recording in a class folder';
 }
 $('courseBtn').addEventListener('click', function () {
   if (!play.session) return;
-  var v = prompt('Tag this recording with a course (e.g. NUR105, NUR106, BIO301).\nLeave it blank to remove the tag:', play.session.course || '');
+  var v = prompt('Which class folder does this lecture belong in? (e.g. NUR105, NUR106, BIO301)\nLeave it blank to unfile it:', play.session.course || '');
   if (v === null) return;
   play.session.course = v.trim();
   updateCourseBtn();
@@ -3078,10 +3450,10 @@ window.addEventListener('beforeunload', function (e) {
 
 /* ================= first-run tour ================= */
 var TOUR = [
-  { e: '🎙️', t: 'Welcome to NoteHub', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
-  { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and flip to where the lecture starts. Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
-  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (colors and highlighter in the toolbar - fingers scroll, pencil writes). Type notes on the right; every line is stamped to the moment you wrote it. And when the professor says <b>&quot;this will be on the exam&quot;</b> - hit the gold <b>&#9733; On the exam</b> button.' },
-  { e: '⚡', t: 'After class', b: 'Open the recording: everything replays in sync, and tapping any timestamp jumps the audio there. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
+  { e: '🎙️', t: 'Welcome to SmartBooty', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
+  { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, and <b>&#128275; Lock</b> freezes the slide so swiping only turns pages. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
   { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.' }
 ];
 var tourStep = 0;
@@ -3123,7 +3495,7 @@ function applyCompat() {
   var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof MediaRecorder !== 'undefined');
   if (!canRecord) {
     $('compatNotice').innerHTML = '<strong>This browser cannot record audio.</strong> ' +
-      'NoteHub needs an up-to-date Chrome, Edge, or Safari. You can still open, play, and mark up ' +
+      'SmartBooty needs an up-to-date Chrome, Edge, or Safari. You can still open, play, and mark up ' +
       'recordings that were imported from a backup.';
     $('compatNotice').classList.remove('hidden');
     $('newRecBtn').disabled = true;
@@ -3131,7 +3503,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784347481534';
+var APP_VERSION = '1784530582309';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -3173,7 +3545,7 @@ function updateStorageInfo() {
     var human = function (b) {
       return b >= 1e9 ? (b / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1e6)) + ' MB';
     };
-    el.innerHTML = 'Device storage for NoteHub: <b>' + human(used) + '</b> of ' + human(est.quota) + ' available (' + pct + '%)' +
+    el.innerHTML = 'Device storage for SmartBooty: <b>' + human(used) + '</b> of ' + human(est.quota) + ' available (' + pct + '%)' +
       (pct >= 80 ? ' &mdash; <span style="color:var(--orange)"><b>getting full:</b> back up recordings you care about, then delete old ones</span>' : '');
   }).catch(function () { el.textContent = ''; });
 }
