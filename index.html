@@ -423,6 +423,7 @@
         <div class="status-line" id="storageInfo"></div>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="btn ghost" id="reportBtn" title="Copy a problem report to send to whoever shared the app with you">&#9888; Report a problem</button>
         <button class="btn ghost" id="importBtn">Import backup</button>
         <button class="btn red big" id="newRecBtn">&#9679; New recording</button>
       </div>
@@ -3454,7 +3455,7 @@ var TOUR = [
   { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
   { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, and <b>&#128275; Lock</b> freezes the slide so swiping only turns pages. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
   { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
-  { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.' }
+  { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.<br><b>5.</b> Something acting up? Tap <b>&#9888; Report a problem</b> on the home screen &mdash; it copies a little report to paste to whoever shared the app with you.' }
 ];
 var tourStep = 0;
 function renderTourStep() {
@@ -3503,7 +3504,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784530582309';
+var APP_VERSION = '1784563443334';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -3526,7 +3527,62 @@ function maybeShowUpdateBanner() {
   // never interrupt a live recording with a reload prompt
   if (updateAvailable && !rec.running) $('updateNotice').classList.remove('hidden');
 }
-$('updateReload').addEventListener('click', function () { location.reload(); });
+/* ================= report a problem =================
+   No server, no accounts: build a diagnostic report, copy it to the
+   clipboard, and the user pastes it to whoever shared the app. */
+var recentErrors = [];
+window.addEventListener('error', function (e) {
+  recentErrors.push((e.message || 'error') + (e.filename ? ' @' + (e.lineno || '?') : ''));
+  if (recentErrors.length > 5) recentErrors.shift();
+});
+window.addEventListener('unhandledrejection', function (e) {
+  recentErrors.push('promise: ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  if (recentErrors.length > 5) recentErrors.shift();
+});
+$('reportBtn').addEventListener('click', function () {
+  var desc = prompt('What went wrong? One or two sentences is plenty:');
+  if (desc === null) return;
+  var finish = function (storageLine) {
+    var report = [
+      '--- SmartBooty problem report ---',
+      'Problem: ' + (desc.trim() || '(not described)'),
+      'App version: ' + APP_VERSION,
+      'When: ' + new Date().toString(),
+      'Browser: ' + navigator.userAgent,
+      'Screen: ' + window.innerWidth + 'x' + window.innerHeight + ' @' + (window.devicePixelRatio || 1) + 'x',
+      'Can record: ' + !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && typeof MediaRecorder !== 'undefined'),
+      'Live transcription engine: ' + !!(window.SpeechRecognition || window.webkitSpeechRecognition),
+      storageLine,
+      'Recent errors: ' + (recentErrors.length ? recentErrors.join(' | ') : 'none'),
+      '--- end of report ---'
+    ].join('\n');
+    var done = function (ok) {
+      alert(ok
+        ? 'Report copied! Paste it to whoever shared SmartBooty with you (class group chat works great).'
+        : 'Could not copy automatically - screenshot this instead:\n\n' + report);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(report).then(function () { done(true); }, function () { done(legacyCopy(report)); });
+    } else {
+      done(legacyCopy(report));
+    }
+  };
+  if (navigator.storage && navigator.storage.estimate) {
+    navigator.storage.estimate().then(function (est) {
+      finish('Storage: ' + Math.round((est.usage || 0) / 1e6) + ' MB used of ' + Math.round((est.quota || 0) / 1e6) + ' MB');
+    }, function () { finish('Storage: unknown'); });
+  } else {
+    finish('Storage: unknown');
+  }
+});
+
+$('updateReload').addEventListener('click', function () {
+  var ok = confirm('Update SmartBooty now?\n\n' +
+    'Your saved recordings, notes, and folders stay on this device - updating never deletes them. ' +
+    'The page just reloads into the new version.\n\n' +
+    'If you are in the middle of something, finish and save it first.');
+  if (ok) location.reload();
+});
 document.addEventListener('visibilitychange', function () {
   if (document.visibilityState === 'visible') checkForUpdate();
 });
