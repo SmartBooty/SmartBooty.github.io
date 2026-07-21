@@ -200,6 +200,8 @@
 
   .doc-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   .doc-controls .ind { color: var(--muted); font-size: 15px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .doc-controls input.find { width: 96px; }
+  .doc-controls .find-info { color: var(--muted); font-size: 13px; }
   .doc-controls input.jump {
     width: 58px;
     background: var(--deep);
@@ -472,7 +474,11 @@
               <span class="ind" id="recPgInd">1 / 1</span>
               <button class="btn ghost tiny" id="recPgNext">&#9654;</button>
               <input class="jump" id="recPgJump" type="number" min="1" title="Go to page">
+              <button class="btn ghost tiny" id="recBackBtn" title="Back to the page you were on (tap again to toggle)">&#8617;</button>
+              <input class="jump find" id="recFindInput" type="search" placeholder="Find" title="Type a word, press Enter - jumps to the page it is on. Enter again = next match">
+              <span class="find-info" id="recFindInfo"></span>
               <button class="btn ghost tiny" id="recThumbBtn" title="Show page thumbnails">Pages</button>
+              <button class="btn ghost tiny" id="recExpandBtn" title="Give the document the whole row - bigger text, full page width still visible">Expand</button>
               <button class="btn ghost tiny" id="recZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="recZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="recDarkBtn" title="Dark page mode">Dark</button>
@@ -575,7 +581,11 @@
               <span class="ind" id="playPgInd">1 / 1</span>
               <button class="btn ghost tiny" id="playPgNext">&#9654;</button>
               <input class="jump" id="playPgJump" type="number" min="1" title="Go to page">
+              <button class="btn ghost tiny" id="playBackBtn" title="Back to the page you were on (tap again to toggle)">&#8617;</button>
+              <input class="jump find" id="playFindInput" type="search" placeholder="Find" title="Type a word, press Enter - jumps to the page it is on. Enter again = next match">
+              <span class="find-info" id="playFindInfo"></span>
               <button class="btn ghost tiny" id="playThumbBtn" title="Show page thumbnails">Pages</button>
+              <button class="btn ghost tiny" id="playExpandBtn" title="Give the document the whole row - bigger text, full page width still visible">Expand</button>
               <button class="btn ghost tiny" id="playZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="playZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="playDarkBtn" title="Dark page mode">Dark</button>
@@ -942,9 +952,14 @@ function DocViewer(ids) {
     darkBtn: $(ids.darkBtn),
     lockBtn: $(ids.lockBtn),
     thumbBtn: $(ids.thumbBtn),
-    thumbStrip: $(ids.thumbStrip)
+    thumbStrip: $(ids.thumbStrip),
+    expandBtn: $(ids.expandBtn),
+    backBtn: $(ids.backBtn),
+    findInput: $(ids.findInput),
+    findInfo: $(ids.findInfo)
   };
   this.locked = false;
+  this.wide = false; // Expand: full-row pane at fit-width - readable, not magnified
   this.pdf = null;
   this.blob = null;
   this.name = '';
@@ -972,8 +987,8 @@ function DocViewer(ids) {
     if (!isNaN(n)) self.goto(n, false);
     self.els.jump.value = '';
   });
-  this.els.zoomIn.addEventListener('click', function () { self.zoomBy(1.4); });
-  this.els.zoomOut.addEventListener('click', function () { self.zoomBy(1 / 1.4); });
+  this.els.zoomIn.addEventListener('click', function () { self.zoomBy(1.25); });
+  this.els.zoomOut.addEventListener('click', function () { self.zoomBy(1 / 1.25); });
   this.els.darkBtn.addEventListener('click', function () {
     prefs.darkPage = !prefs.darkPage;
     savePrefs();
@@ -985,6 +1000,22 @@ function DocViewer(ids) {
     applyLockPref();
   });
   this.els.thumbBtn.addEventListener('click', function () { self.toggleThumbs(); });
+  this.els.expandBtn.addEventListener('click', function () {
+    self.wide = !self.wide;
+    self.els.expandBtn.textContent = self.wide ? 'Shrink' : 'Expand';
+    self.els.expandBtn.classList.toggle('toggle-on', self.wide);
+    self.render();
+  });
+  this.els.backBtn.addEventListener('click', function () {
+    if (self._lastPage && self._lastPage !== self.page) self.goto(self._lastPage, false);
+  });
+  this.els.findInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); self.findInDoc(self.els.findInput.value); }
+    e.stopPropagation();
+  });
+  this.els.findInput.addEventListener('input', function () {
+    if (!self.els.findInput.value.trim()) self.clearFind();
+  });
   this._bindInk();
   this._bindGestures();
 }
@@ -1654,6 +1685,21 @@ DocViewer.prototype.drawInk = function () {
     ctx.stroke();
     ctx.restore();
   }
+  // find-in-document: box the matches on the page we jumped to
+  if (this._findBoxes && this._findBoxesPage === this.page) {
+    ctx.save();
+    ctx.fillStyle = 'rgba(255,165,0,0.28)';
+    ctx.strokeStyle = 'rgba(255,165,0,0.95)';
+    ctx.lineWidth = 2;
+    for (var fb = 0; fb < this._findBoxes.length; fb++) {
+      var bx = this._findBoxes[fb];
+      var fx = bx[0] * ic.width - 3, fy = bx[1] * ic.height - 3;
+      var fw = (bx[2] - bx[0]) * ic.width + 6, fh = (bx[3] - bx[1]) * ic.height + 6;
+      ctx.fillRect(fx, fy, fw, fh);
+      ctx.strokeRect(fx, fy, fw, fh);
+    }
+    ctx.restore();
+  }
 };
 
 /* Draws a stroke as quadratic curves through segment midpoints - the
@@ -1699,9 +1745,72 @@ DocViewer.prototype.goto = function (n, silent) {
   if (!this.pdf) return;
   n = Math.max(1, Math.min(this.numPages, n));
   if (n === this.page) { this.updateInd(); return; }
+  this._lastPage = this.page; // the Back button returns here
   this.page = n;
   this.render();
   if (!silent && this.onPageChange) this.onPageChange(n);
+};
+
+/* ---- find in document: the professor names a heading, she types it,
+   the doc jumps to that page with the matches boxed in orange.
+   Enter again = next page with a match. Back (&#8617;) returns. ---- */
+DocViewer.prototype.clearFind = function () {
+  this._find = null;
+  this._findBoxes = null;
+  this._findBoxesPage = 0;
+  if (this.els.findInfo) this.els.findInfo.textContent = '';
+  this.drawInk();
+};
+DocViewer.prototype.findInDoc = function (q) {
+  var self = this;
+  q = (q || '').trim().toLowerCase();
+  if (!q || !self.pdf) { self.clearFind(); return Promise.resolve(); }
+  var jump = function () {
+    var f = self._find;
+    if (!f.pages.length) {
+      self.els.findInfo.textContent = '0 pages';
+      self._findBoxes = null;
+      self.drawInk();
+      return;
+    }
+    var p = f.pages[f.idx];
+    self.els.findInfo.textContent = (f.idx + 1) + '/' + f.pages.length;
+    self.goto(p, false);
+    self._markFind(p, f.q);
+  };
+  if (self._find && self._find.q === q) {
+    if (self._find.pages.length) self._find.idx = (self._find.idx + 1) % self._find.pages.length;
+    jump();
+    return Promise.resolve();
+  }
+  return self.searchText(q).then(function (hits) {
+    var pages = hits.map(function (h) { return h.page; });
+    var idx = 0; // start at the first match at/after where she is now
+    for (var i = 0; i < pages.length; i++) {
+      if (pages[i] >= self.page) { idx = i; break; }
+    }
+    self._find = { q: q, pages: pages, idx: idx };
+    jump();
+  });
+};
+DocViewer.prototype._markFind = function (p, q) {
+  var self = this;
+  self.pdf.getPage(p).then(function (pg) {
+    return pg.getTextContent().then(function (tc) {
+      if (!self._find || self._find.q !== q) return; // query changed mid-flight
+      var vp = pg.getViewport({ scale: 1 });
+      var boxes = [];
+      tc.items.forEach(function (it) {
+        if (!it.str || it.str.toLowerCase().indexOf(q) === -1) return;
+        var x = it.transform[4], y = it.transform[5];
+        var w = it.width || 0, h = it.height || 10;
+        boxes.push([x / vp.width, 1 - (y + h) / vp.height, (x + w) / vp.width, 1 - y / vp.height]);
+      });
+      self._findBoxes = boxes;
+      self._findBoxesPage = p;
+      self.drawInk();
+    });
+  }).catch(function (e) { console.error('find highlight failed', e); });
 };
 DocViewer.prototype.updateInd = function () {
   this.els.ind.textContent = this.page + ' / ' + this.numPages;
@@ -1768,11 +1877,11 @@ DocViewer.prototype.render = function () {
   if (!self.pdf) return Promise.resolve();
   var seq = ++self._renderSeq;
   self.updateInd();
-  // zooming in gives the document the full row width; back at 1x the
-  // normal three-pane layout returns
+  // Expand (or zooming past 1x) gives the document the full row width;
+  // otherwise the normal three-pane layout returns
   var pane = self.els.scroll.parentElement;
   if (pane && pane.classList.contains('doc')) {
-    pane.classList.toggle('doczoomed', self.zoom > 1.01);
+    pane.classList.toggle('doczoomed', self.wide || self.zoom > 1.01);
   }
   return self.pdf.getPage(self.page).then(function (page) {
     if (seq !== self._renderSeq) return;
@@ -1826,6 +1935,15 @@ DocViewer.prototype.reset = function () {
   this.els.thumbStrip.innerHTML = '';
   this.els.thumbBtn.classList.remove('toggle-on');
   this._thumbsFor = null;
+  this.wide = false;
+  this.els.expandBtn.textContent = 'Expand';
+  this.els.expandBtn.classList.remove('toggle-on');
+  this._find = null;
+  this._findBoxes = null;
+  this._findBoxesPage = 0;
+  this._lastPage = 0;
+  this.els.findInput.value = '';
+  this.els.findInfo.textContent = '';
 };
 
 var recViewer = new DocViewer({
@@ -1833,14 +1951,16 @@ var recViewer = new DocViewer({
   wrap: 'recCanvasWrap', ink: 'recInkCanvas', inkBar: 'recInkBar',
   nav: 'recDocNav', prev: 'recPgPrev', next: 'recPgNext', ind: 'recPgInd', jump: 'recPgJump',
   zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn', lockBtn: 'recLockBtn',
-  thumbBtn: 'recThumbBtn', thumbStrip: 'recThumbStrip'
+  thumbBtn: 'recThumbBtn', thumbStrip: 'recThumbStrip', expandBtn: 'recExpandBtn',
+  backBtn: 'recBackBtn', findInput: 'recFindInput', findInfo: 'recFindInfo'
 });
 var playViewer = new DocViewer({
   scroll: 'playDocScroll', placeholder: 'playDocPlaceholder', canvas: 'playDocCanvas',
   wrap: 'playCanvasWrap', ink: 'playInkCanvas', inkBar: 'playInkBar',
   nav: 'playDocNav', prev: 'playPgPrev', next: 'playPgNext', ind: 'playPgInd', jump: 'playPgJump',
   zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn', lockBtn: 'playLockBtn',
-  thumbBtn: 'playThumbBtn', thumbStrip: 'playThumbStrip'
+  thumbBtn: 'playThumbBtn', thumbStrip: 'playThumbStrip', expandBtn: 'playExpandBtn',
+  backBtn: 'playBackBtn', findInput: 'playFindInput', findInfo: 'playFindInfo'
 });
 recViewer.timeFn = function () { return elapsedNow(); };
 playViewer.timeFn = function () { return $('player').currentTime; };
@@ -3467,7 +3587,7 @@ window.addEventListener('beforeunload', function (e) {
 var TOUR = [
   { e: '🎙️', t: 'Welcome to SmartBooty', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
   { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
-  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, <b>Expand</b> gives the document the whole row for readable textbook text (+/&#8722; fine-zooms from there), and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Professor jumping around the book? Type a word into <b>Find</b> and Enter jumps to its page (Enter again = next match); <b>&#8617;</b> hops back to where you were. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
   { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
   { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.<br><b>5.</b> Something acting up? Tap <b>&#9888; Report a problem</b> on the home screen &mdash; it copies a little report to paste to whoever shared the app with you.' }
 ];
@@ -3518,7 +3638,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784664655507';
+var APP_VERSION = '1784667118180';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
