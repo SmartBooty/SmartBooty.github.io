@@ -193,7 +193,9 @@
   }
   .pane .scroll { flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; overscroll-behavior: contain; }
   .pane.doc .scroll { padding: 10px; text-align: center; background: var(--deep); border-radius: 0 0 14px 14px; overflow: auto; touch-action: pan-x pan-y; }
-  .pane.doc .scroll.pagelocked { overflow: hidden; touch-action: none; }
+  /* Locked: frozen side-to-side (side-swipes turn pages), but a tall
+     textbook page still scrolls up and down so the bottom is readable. */
+  .pane.doc .scroll.pagelocked { overflow-x: hidden; overflow-y: auto; touch-action: pan-y; }
   .pane.doc canvas { border-radius: 6px; background: #fff; }
 
   .doc-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
@@ -474,7 +476,7 @@
               <button class="btn ghost tiny" id="recZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="recZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="recDarkBtn" title="Dark page mode">Dark</button>
-              <button class="btn ghost tiny" id="recLockBtn" title="Lock the page in place &mdash; it cannot move around; swiping only turns pages">&#128275; Lock</button>
+              <button class="btn ghost tiny" id="recLockBtn" title="Lock the page &mdash; no sideways drift, side-swipes turn pages; tall pages still scroll up and down">&#128275; Lock</button>
             </span>
           </div>
         </div>
@@ -577,7 +579,7 @@
               <button class="btn ghost tiny" id="playZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="playZoomIn" title="Zoom in">&#43;</button>
               <button class="btn ghost tiny" id="playDarkBtn" title="Dark page mode">Dark</button>
-              <button class="btn ghost tiny" id="playLockBtn" title="Lock the page in place &mdash; it cannot move around; swiping only turns pages">&#128275; Lock</button>
+              <button class="btn ghost tiny" id="playLockBtn" title="Lock the page &mdash; no sideways drift, side-swipes turn pages; tall pages still scroll up and down">&#128275; Lock</button>
             </span>
           </div>
         </div>
@@ -1056,14 +1058,14 @@ DocViewer.prototype._bindGestures = function () {
      pointer events. A shared cooldown stops double-firing. */
   var swipeCooldownT = 0;
   var edgeState = function () {
-    // locked page: nothing scrolls, so every swipe counts as "at the edge"
-    // and simply turns the page
-    if (self.locked) return { atTop: true, atBottom: true, atLeft: true, atRight: true };
+    // locked: sideways is always "at the edge" (side-swipes just turn pages);
+    // vertically the REAL position matters, so a tall textbook page scrolls
+    // to the bottom first and only then flips
     return {
       atTop: el.scrollTop <= 2,
       atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
-      atLeft: el.scrollLeft <= 2,
-      atRight: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
+      atLeft: self.locked || el.scrollLeft <= 2,
+      atRight: self.locked || el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
     };
   };
   var trySwipe = function (dx, dy, s) {
@@ -1092,12 +1094,22 @@ DocViewer.prototype._bindGestures = function () {
     trySwipe(e.clientX - st.x, e.clientY - st.y, st.s);
   }, true);
 
-  /* Locked page: swallow the native gesture entirely so the browser can
-     never hand it up the chain and drag the whole app around (iPad WebKit
-     does not reliably honor touch-action here). Swipe detection below
-     still runs - preventDefault does not stop our own listeners. */
+  /* Locked page: swallow HORIZONTAL gestures so the browser can never
+     drag the page (or the whole app) sideways - side-swipes belong to
+     page turning. Vertical gestures pass through so a tall textbook
+     page still scrolls to its bottom. (JS fallback because iPad WebKit
+     does not reliably honor touch-action.) */
+  el.addEventListener('touchstart', function (e) {
+    var t = e.touches[0];
+    self._lockTouch = t ? { x: t.clientX, y: t.clientY } : null;
+  }, { passive: true });
   el.addEventListener('touchmove', function (e) {
-    if (self.locked && e.cancelable) e.preventDefault();
+    if (!self.locked || !e.cancelable || !self._lockTouch) return;
+    var t = e.touches[0];
+    if (!t) return;
+    if (Math.abs(t.clientX - self._lockTouch.x) > Math.abs(t.clientY - self._lockTouch.y)) {
+      e.preventDefault();
+    }
   }, { passive: false });
 
   var tSwipe = null; // finger path
@@ -1136,8 +1148,8 @@ DocViewer.prototype._bindGestures = function () {
     if (!self.pdf) return;
     var now = Date.now();
     if (now < wheelCooldown) return;
-    var atTop = self.locked || el.scrollTop <= 2;
-    var atBottom = self.locked || el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
+    var atTop = el.scrollTop <= 2;
+    var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
     if (e.deltaY > 20 && atBottom && self.page < self.numPages) {
       wheelCooldown = now + 700;
       self.goto(self.page + 1, false);
@@ -1432,24 +1444,26 @@ DocViewer.prototype._pointerMove = function (e) {
       this._maybePan = null;
       this._beginStroke(m.pt); // it was the Pencil after all
     } else if (this.locked) {
-      // finger on a locked page: no panning - a decisive swipe turns the page
+      // finger on a locked page: a decisive side-swipe turns the page,
+      // a vertical drag scrolls a tall textbook page for reading
       var ldx = e.clientX - m.x, ldy = e.clientY - m.y;
       if (Math.abs(ldx) > 60 && Math.abs(ldx) > 2 * Math.abs(ldy)) {
         this._maybePan = null;
         this.goto(this.page + (ldx < 0 ? 1 : -1), false);
-      } else if (Math.abs(ldy) > 60 && Math.abs(ldy) > 2 * Math.abs(ldx)) {
-        this._maybePan = null;
-        this.goto(this.page + (ldy < 0 ? 1 : -1), false);
+        return;
       }
-      return;
+      if (Math.abs(ldy) > 12 && Math.abs(ldy) > Math.abs(ldx)) {
+        this._maybePan = null;
+        this._pan = { x: m.x, y: m.y, sl: m.sl, st: m.st };
+      }
+      if (this._maybePan) return; // still deciding
     } else {
       this._maybePan = null;
       this._pan = { x: m.x, y: m.y, sl: m.sl, st: m.st };
     }
   }
   if (this._pan) {
-    if (this.locked) { this._pan = null; return; }
-    this.els.scroll.scrollLeft = this._pan.sl - (e.clientX - this._pan.x);
+    if (!this.locked) this.els.scroll.scrollLeft = this._pan.sl - (e.clientX - this._pan.x);
     this.els.scroll.scrollTop = this._pan.st - (e.clientY - this._pan.y);
     return;
   }
@@ -3453,7 +3467,7 @@ window.addEventListener('beforeunload', function (e) {
 var TOUR = [
   { e: '🎙️', t: 'Welcome to SmartBooty', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
   { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
-  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, and <b>&#128275; Lock</b> freezes the slide so swiping only turns pages. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
   { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
   { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.<br><b>5.</b> Something acting up? Tap <b>&#9888; Report a problem</b> on the home screen &mdash; it copies a little report to paste to whoever shared the app with you.' }
 ];
@@ -3504,7 +3518,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784563443334';
+var APP_VERSION = '1784664655507';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
