@@ -172,6 +172,17 @@
   }
   .pane.doc { flex: 1.3 1 400px; }
   .pane.doc.doczoomed { flex-basis: 100%; max-height: 86vh; }
+  /* Expand = focus mode: banner and side panes get out of the way,
+     the document fills the remaining screen height */
+  body.docfocus header.bar { display: none; }
+  body.docfocus .panes .pane:not(.doc) { display: none; }
+  /* the view stops scrolling so flex hands the doc pane EXACTLY the
+     remaining screen height - the page then scrolls inside it as usual */
+  body.docfocus #recordView, body.docfocus #playView { overflow: hidden; }
+  /* wrap-mode flex never compresses an item's height, so pin the pane
+     to its container outright */
+  body.docfocus .panes { flex: 1; min-height: 0; flex-wrap: nowrap; }
+  body.docfocus .pane.doc.doczoomed { max-height: none; flex: 1 1 100%; min-height: 0; height: 100%; }
   .pane.collapsed { flex: 0 0 100%; min-height: 0; max-height: none; }
   .pane.collapsed .scroll, .pane.collapsed .note-hint, .pane.collapsed .ink-toolbar { display: none; }
   .pane-head {
@@ -894,6 +905,16 @@ function showView(name) {
   $('recordView').classList.toggle('hidden', name !== 'record');
   $('playView').classList.toggle('hidden', name !== 'play');
   $('recallView').classList.toggle('hidden', name !== 'recall');
+  if (typeof updateDocFocus === 'function') updateDocFocus();
+}
+
+/* GoodNotes-style focus: while Expand is on, the banner and the side
+   panes step aside and the document gets essentially the whole screen. */
+function updateDocFocus() {
+  var v = null;
+  if (typeof playViewer !== 'undefined' && !$('playView').classList.contains('hidden')) v = playViewer;
+  else if (typeof recViewer !== 'undefined' && !$('recordView').classList.contains('hidden')) v = recViewer;
+  document.body.classList.toggle('docfocus', !!(v && v.wide));
 }
 
 /* ================= PDF document viewer ================= */
@@ -1004,6 +1025,7 @@ function DocViewer(ids) {
     self.wide = !self.wide;
     self.els.expandBtn.textContent = self.wide ? 'Shrink' : 'Expand';
     self.els.expandBtn.classList.toggle('toggle-on', self.wide);
+    if (typeof updateDocFocus === 'function') updateDocFocus();
     self.render();
   });
   this.els.backBtn.addEventListener('click', function () {
@@ -1022,10 +1044,32 @@ function DocViewer(ids) {
 
 DocViewer.prototype.zoomBy = function (f) {
   if (!this.pdf || this.locked) return; // locked page holds its size too
-  var z = Math.max(1, Math.min(4, this.zoom * f));
-  if (z === this.zoom) return;
-  this.zoom = z;
-  this.render();
+  this.rezoom(this.zoom * f);
+};
+/* Zoom that keeps the spot you are looking at in place: the anchor point
+   (pinch midpoint, or the middle of the view for the +/- buttons) shows
+   the same piece of the page before and after the re-render. */
+DocViewer.prototype.rezoom = function (z, anchorX, anchorY, nx, ny) {
+  var self = this;
+  z = Math.max(1, Math.min(4, z));
+  if (!self.pdf || z === self.zoom) return Promise.resolve();
+  var scroll = self.els.scroll, wrap = self.els.wrap;
+  var sr = scroll.getBoundingClientRect();
+  if (anchorX === undefined) {
+    anchorX = sr.left + scroll.clientWidth / 2;
+    anchorY = sr.top + scroll.clientHeight / 2;
+  }
+  if (nx === undefined) {
+    var wr = wrap.getBoundingClientRect();
+    nx = (anchorX - wr.left) / (wr.width || 1);
+    ny = (anchorY - wr.top) / (wr.height || 1);
+  }
+  self.zoom = z;
+  return Promise.resolve(self.render()).then(function () {
+    var wr2 = wrap.getBoundingClientRect();
+    scroll.scrollLeft += (wr2.left + nx * wr2.width) - anchorX;
+    scroll.scrollTop += (wr2.top + ny * wr2.height) - anchorY;
+  });
 };
 
 /* Two-finger pinch zoom on the document. Live feedback via CSS transform,
@@ -1035,6 +1079,7 @@ DocViewer.prototype._bindGestures = function () {
   var el = self.els.scroll;
   var touches = {};
   var startDist = 0, startZoom = 1, pinching = false;
+  var pinchMid = null; // the point between the fingers - zoom anchors HERE
   el.addEventListener('pointerdown', function (e) {
     if (e.pointerType !== 'touch' || !self.pdf) return;
     touches[e.pointerId] = [e.clientX, e.clientY];
@@ -1044,6 +1089,11 @@ DocViewer.prototype._bindGestures = function () {
       startDist = Math.hypot(a[0] - b[0], a[1] - b[1]);
       startZoom = self.zoom;
       pinching = true;
+      pinchMid = { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2 };
+      // live preview scales around the fingers, not the page corner
+      var wr = self.els.wrap.getBoundingClientRect();
+      self.els.wrap.style.transformOrigin =
+        (pinchMid.x - wr.left) + 'px ' + (pinchMid.y - wr.top) + 'px';
       self._stroke = null; // a pinch is not a pen stroke
       self._pan = null;
       self.drawInk();
@@ -1056,10 +1106,10 @@ DocViewer.prototype._bindGestures = function () {
     if (ids.length < 2) return;
     var a = touches[ids[0]], b = touches[ids[1]];
     var d = Math.hypot(a[0] - b[0], a[1] - b[1]);
+    pinchMid = { x: (a[0] + b[0]) / 2, y: (a[1] + b[1]) / 2 };
     if (startDist > 0) {
       var z = Math.max(1, Math.min(4, startZoom * d / startDist));
       self._pendingZoom = z;
-      self.els.wrap.style.transformOrigin = '0 0';
       self.els.wrap.style.transform = 'scale(' + (z / self.zoom) + ')';
     }
     e.preventDefault();
@@ -1069,12 +1119,20 @@ DocViewer.prototype._bindGestures = function () {
     delete touches[e.pointerId];
     if (pinching && Object.keys(touches).length < 2) {
       pinching = false;
-      self.els.wrap.style.transform = '';
-      if (self._pendingZoom) {
-        self.zoom = self._pendingZoom;
-        self._pendingZoom = null;
-        self.render();
+      var target = self._pendingZoom;
+      var mid = pinchMid;
+      self._pendingZoom = null;
+      var nx, ny;
+      if (target && mid) {
+        // measure WITH the preview transform applied - that is the content
+        // the fingers were actually over
+        var wr = self.els.wrap.getBoundingClientRect();
+        nx = (mid.x - wr.left) / (wr.width || 1);
+        ny = (mid.y - wr.top) / (wr.height || 1);
       }
+      self.els.wrap.style.transform = '';
+      self.els.wrap.style.transformOrigin = '';
+      if (target) self.rezoom(target, mid && mid.x, mid && mid.y, nx, ny);
     }
   };
   el.addEventListener('pointerup', end, true);
@@ -1889,12 +1947,19 @@ DocViewer.prototype.render = function () {
     var vp1 = page.getViewport({ scale: 1 });
     var scale = cssW / vp1.width;
     var dpr = window.devicePixelRatio || 1;
-    var vp = page.getViewport({ scale: scale * dpr });
+    // iPads blank the canvas beyond ~16.7M pixels; render a zoomed tall
+    // chapter page at a capped backing resolution and let CSS scale it -
+    // slightly softer at extreme zoom, but it always renders
+    var backing = scale * dpr;
+    var MAX_CANVAS_PIXELS = 16000000;
+    var px = (vp1.width * backing) * (vp1.height * backing);
+    if (px > MAX_CANVAS_PIXELS) backing *= Math.sqrt(MAX_CANVAS_PIXELS / px);
+    var vp = page.getViewport({ scale: backing });
     var c = self.els.canvas;
     c.width = vp.width;
     c.height = vp.height;
-    c.style.width = Math.floor(vp.width / dpr) + 'px';
-    c.style.height = Math.floor(vp.height / dpr) + 'px';
+    c.style.width = Math.floor(cssW) + 'px';
+    c.style.height = Math.floor(vp1.height * scale) + 'px';
     return page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise.then(function () {
       if (seq !== self._renderSeq) return;
       var ic = self.els.ink;
@@ -1938,6 +2003,7 @@ DocViewer.prototype.reset = function () {
   this.wide = false;
   this.els.expandBtn.textContent = 'Expand';
   this.els.expandBtn.classList.remove('toggle-on');
+  if (typeof updateDocFocus === 'function') updateDocFocus();
   this._find = null;
   this._findBoxes = null;
   this._findBoxesPage = 0;
@@ -3587,7 +3653,7 @@ window.addEventListener('beforeunload', function (e) {
 var TOUR = [
   { e: '🎙️', t: 'Welcome to SmartBooty', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
   { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
-  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, <b>Expand</b> gives the document the whole row for readable textbook text (+/&#8722; fine-zooms from there), and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Professor jumping around the book? Type a word into <b>Find</b> and Enter jumps to its page (Enter again = next match); <b>&#8617;</b> hops back to where you were. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, <b>Expand</b> goes full-screen GoodNotes-style - banner and side panes step aside, the chapter fills the screen, and pinch zooms right where your fingers are (+/&#8722; fine-zooms too; <b>Shrink</b> brings the panes back), and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Professor jumping around the book? Type a word into <b>Find</b> and Enter jumps to its page (Enter again = next match); <b>&#8617;</b> hops back to where you were. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
   { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
   { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.<br><b>5.</b> Something acting up? Tap <b>&#9888; Report a problem</b> on the home screen &mdash; it copies a little report to paste to whoever shared the app with you.' }
 ];
@@ -3638,7 +3704,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784667118180';
+var APP_VERSION = '1784668592486';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
