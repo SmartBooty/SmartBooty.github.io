@@ -229,7 +229,11 @@
   .doc-embed { width: 100%; height: 100%; min-height: 300px; border: none; border-radius: 0 0 14px 14px; }
 
   html, body { overscroll-behavior: none; }
-  .canvas-wrap { position: relative; display: inline-block; }
+  .canvas-wrap { position: relative; display: inline-block; vertical-align: top; }
+  .canvas-wrap > canvas:first-child { display: block; } /* no inline baseline gap under the page */
+  /* Column mode owns the horizontal axis: side-swipes step columns,
+     the page can never be dragged sideways off a column */
+  .pane.doc .scroll.colmode { overflow-x: hidden; touch-action: pan-y; }
   .thumb-strip {
     display: flex; gap: 8px; overflow-x: auto; overscroll-behavior: contain;
     padding: 8px 10px; background: var(--deep); border-bottom: 1px solid var(--shell-border); flex: 0 0 auto;
@@ -489,6 +493,7 @@
               <input class="jump find" id="recFindInput" type="search" placeholder="Find" title="Type a word, press Enter - jumps to the page it is on. Enter again = next match">
               <span class="find-info" id="recFindInfo"></span>
               <button class="btn ghost tiny" id="recThumbBtn" title="Show page thumbnails">Pages</button>
+              <button class="btn ghost tiny" id="recFitBtn" title="How the page fits: Width (scroll down) / Page (whole page, no scrolling) / Column (one textbook column at a time, big text)">Fit: Width</button>
               <button class="btn ghost tiny" id="recExpandBtn" title="Give the document the whole row - bigger text, full page width still visible">Expand</button>
               <button class="btn ghost tiny" id="recZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="recZoomIn" title="Zoom in">&#43;</button>
@@ -596,6 +601,7 @@
               <input class="jump find" id="playFindInput" type="search" placeholder="Find" title="Type a word, press Enter - jumps to the page it is on. Enter again = next match">
               <span class="find-info" id="playFindInfo"></span>
               <button class="btn ghost tiny" id="playThumbBtn" title="Show page thumbnails">Pages</button>
+              <button class="btn ghost tiny" id="playFitBtn" title="How the page fits: Width (scroll down) / Page (whole page, no scrolling) / Column (one textbook column at a time, big text)">Fit: Width</button>
               <button class="btn ghost tiny" id="playExpandBtn" title="Give the document the whole row - bigger text, full page width still visible">Expand</button>
               <button class="btn ghost tiny" id="playZoomOut" title="Zoom out">&#8722;</button>
               <button class="btn ghost tiny" id="playZoomIn" title="Zoom in">&#43;</button>
@@ -944,6 +950,7 @@ try {
   if ('darkPage' in storedPrefs) prefs.darkPage = !!storedPrefs.darkPage;
   if ('pageLock' in storedPrefs) prefs.pageLock = !!storedPrefs.pageLock;
   if (typeof storedPrefs.lastCourse === 'string') prefs.lastCourse = storedPrefs.lastCourse;
+  if (storedPrefs.fitMode === 'page' || storedPrefs.fitMode === 'col') prefs.fitMode = storedPrefs.fitMode;
   if (Array.isArray(storedPrefs.presets)) {
     storedPrefs.presets.slice(0, 3).forEach(function (p, i) {
       if (p && (p.tool === 'pen' || p.tool === 'hl') && typeof p.color === 'string') prefs.presets[i] = { tool: p.tool, color: p.color };
@@ -977,10 +984,15 @@ function DocViewer(ids) {
     expandBtn: $(ids.expandBtn),
     backBtn: $(ids.backBtn),
     findInput: $(ids.findInput),
-    findInfo: $(ids.findInfo)
+    findInfo: $(ids.findInfo),
+    fitBtn: $(ids.fitBtn)
   };
   this.locked = false;
   this.wide = false; // Expand: full-row pane at fit-width - readable, not magnified
+  // width = fit page width | page = whole page, no scrolling |
+  // col = one textbook column fills the pane (reads column by column)
+  this.fitMode = (prefs.fitMode === 'page' || prefs.fitMode === 'col') ? prefs.fitMode : 'width';
+  this._col = 0; // which column is on screen in col mode (0 left, 1 right)
   this.pdf = null;
   this.blob = null;
   this.name = '';
@@ -1028,6 +1040,16 @@ function DocViewer(ids) {
     if (typeof updateDocFocus === 'function') updateDocFocus();
     self.render();
   });
+  this.els.fitBtn.addEventListener('click', function () {
+    var order = ['width', 'page', 'col'];
+    self.fitMode = order[(order.indexOf(self.fitMode) + 1) % order.length];
+    self._col = 0;
+    prefs.fitMode = self.fitMode; // next lecture opens the same way
+    savePrefs();
+    self._updateFitBtn();
+    Promise.resolve(self.render()).then(function () { self._applyColScroll(); });
+  });
+  this._updateFitBtn();
   this.els.backBtn.addEventListener('click', function () {
     if (self._lastPage && self._lastPage !== self.page) self.goto(self._lastPage, false);
   });
@@ -1150,22 +1172,23 @@ DocViewer.prototype._bindGestures = function () {
     // locked: sideways is always "at the edge" (side-swipes just turn pages);
     // vertically the REAL position matters, so a tall textbook page scrolls
     // to the bottom first and only then flips
+    var sideFree = self.locked || self.fitMode === 'col'; // side-swipes always step
     return {
       atTop: el.scrollTop <= 2,
       atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 2,
-      atLeft: self.locked || el.scrollLeft <= 2,
-      atRight: self.locked || el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
+      atLeft: sideFree || el.scrollLeft <= 2,
+      atRight: sideFree || el.scrollLeft + el.clientWidth >= el.scrollWidth - 2
     };
   };
   var trySwipe = function (dx, dy, s) {
     if (Date.now() < swipeCooldownT) return;
     var did = false;
     if (Math.abs(dx) > 60 && Math.abs(dx) > 2 * Math.abs(dy)) {
-      if (dx < 0 && s.atRight) { self.goto(self.page + 1, false); did = true; }
-      else if (dx > 0 && s.atLeft) { self.goto(self.page - 1, false); did = true; }
+      if (dx < 0 && s.atRight) { self.nextStep(1); did = true; }
+      else if (dx > 0 && s.atLeft) { self.nextStep(-1); did = true; }
     } else if (Math.abs(dy) > 60 && Math.abs(dy) > 2 * Math.abs(dx)) {
-      if (dy < 0 && s.atBottom) { self.goto(self.page + 1, false); did = true; }
-      else if (dy > 0 && s.atTop) { self.goto(self.page - 1, false); did = true; }
+      if (dy < 0 && s.atBottom) { self.nextStep(1); did = true; }
+      else if (dy > 0 && s.atTop) { self.nextStep(-1); did = true; }
     }
     if (did) swipeCooldownT = Date.now() + 600;
   };
@@ -1193,7 +1216,7 @@ DocViewer.prototype._bindGestures = function () {
     self._lockTouch = t ? { x: t.clientX, y: t.clientY } : null;
   }, { passive: true });
   el.addEventListener('touchmove', function (e) {
-    if (!self.locked || !e.cancelable || !self._lockTouch) return;
+    if ((!self.locked && self.fitMode !== 'col') || !e.cancelable || !self._lockTouch) return;
     var t = e.touches[0];
     if (!t) return;
     if (Math.abs(t.clientX - self._lockTouch.x) > Math.abs(t.clientY - self._lockTouch.y)) {
@@ -1239,13 +1262,13 @@ DocViewer.prototype._bindGestures = function () {
     if (now < wheelCooldown) return;
     var atTop = el.scrollTop <= 2;
     var atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2;
-    if (e.deltaY > 20 && atBottom && self.page < self.numPages) {
+    if (e.deltaY > 20 && atBottom && !(self.fitMode !== 'col' && self.page >= self.numPages)) {
       wheelCooldown = now + 700;
-      self.goto(self.page + 1, false);
+      self.nextStep(1);
       e.preventDefault();
-    } else if (e.deltaY < -20 && atTop && self.page > 1) {
+    } else if (e.deltaY < -20 && atTop && !(self.fitMode !== 'col' && self.page <= 1)) {
       wheelCooldown = now + 700;
-      self.goto(self.page - 1, false);
+      self.nextStep(-1);
       e.preventDefault();
     }
   }, { passive: false });
@@ -1538,7 +1561,7 @@ DocViewer.prototype._pointerMove = function (e) {
       var ldx = e.clientX - m.x, ldy = e.clientY - m.y;
       if (Math.abs(ldx) > 60 && Math.abs(ldx) > 2 * Math.abs(ldy)) {
         this._maybePan = null;
-        this.goto(this.page + (ldx < 0 ? 1 : -1), false);
+        this.nextStep(ldx < 0 ? 1 : -1);
         return;
       }
       if (Math.abs(ldy) > 12 && Math.abs(ldy) > Math.abs(ldx)) {
@@ -1805,7 +1828,8 @@ DocViewer.prototype.goto = function (n, silent) {
   if (n === this.page) { this.updateInd(); return; }
   this._lastPage = this.page; // the Back button returns here
   this.page = n;
-  this.render();
+  var self = this;
+  Promise.resolve(this.render()).then(function () { self._applyColScroll(); });
   if (!silent && this.onPageChange) this.onPageChange(n);
 };
 
@@ -1871,8 +1895,37 @@ DocViewer.prototype._markFind = function (p, q) {
   }).catch(function (e) { console.error('find highlight failed', e); });
 };
 DocViewer.prototype.updateInd = function () {
-  this.els.ind.textContent = this.page + ' / ' + this.numPages;
+  this.els.ind.textContent = this.page + ' / ' + this.numPages +
+    (this.fitMode === 'col' ? (this._col ? ' R' : ' L') : '');
   this._markThumb();
+};
+DocViewer.prototype._updateFitBtn = function () {
+  var labels = { width: 'Fit: Width', page: 'Fit: Page', col: 'Fit: Column' };
+  this.els.fitBtn.textContent = labels[this.fitMode] || 'Fit: Width';
+  this.els.fitBtn.classList.toggle('toggle-on', this.fitMode !== 'width');
+};
+DocViewer.prototype._applyColScroll = function () {
+  if (this.fitMode !== 'col') return;
+  var el = this.els.scroll;
+  el.scrollLeft = this._col ? el.scrollWidth : 0;
+  el.scrollTop = 0; // each column starts reading from its top
+  this.updateInd();
+};
+/* One reading step forward/back. In Column mode that means:
+   left column -> right column -> next page's left column - so
+   following along is just the same swipe over and over. */
+DocViewer.prototype.nextStep = function (dir) {
+  if (!this.pdf) return;
+  if (this.fitMode === 'col') {
+    if (dir > 0 && this._col === 0) { this._col = 1; this._applyColScroll(); return; }
+    if (dir < 0 && this._col === 1) { this._col = 0; this._applyColScroll(); return; }
+    var target = this.page + dir;
+    if (target < 1 || target > this.numPages) return; // the book has ends
+    this._col = dir > 0 ? 0 : 1; // entering the next/previous page
+    this.goto(target, false);
+    return;
+  }
+  this.goto(this.page + dir, false);
 };
 
 /* ---- page thumbnail strip: tap Pages, tap a thumbnail to jump ---- */
@@ -1941,10 +1994,21 @@ DocViewer.prototype.render = function () {
   if (pane && pane.classList.contains('doc')) {
     pane.classList.toggle('doczoomed', self.wide || self.zoom > 1.01);
   }
+  self.els.scroll.classList.toggle('colmode', self.fitMode === 'col');
   return self.pdf.getPage(self.page).then(function (page) {
     if (seq !== self._renderSeq) return;
-    var cssW = Math.max(200, self.els.scroll.clientWidth - 24) * self.zoom;
+    var availW = Math.max(200, self.els.scroll.clientWidth - 24);
     var vp1 = page.getViewport({ scale: 1 });
+    var baseW = availW;
+    if (self.fitMode === 'page') {
+      // whole page on screen at once - no scrolling to read
+      var availH = Math.max(200, self.els.scroll.clientHeight - 20);
+      baseW = Math.min(availW, availH * vp1.width / vp1.height);
+    } else if (self.fitMode === 'col') {
+      // one of two textbook columns fills the pane
+      baseW = availW * 2;
+    }
+    var cssW = baseW * self.zoom;
     var scale = cssW / vp1.width;
     var dpr = window.devicePixelRatio || 1;
     // iPads blank the canvas beyond ~16.7M pixels; render a zoomed tall
@@ -2003,6 +2067,8 @@ DocViewer.prototype.reset = function () {
   this.wide = false;
   this.els.expandBtn.textContent = 'Expand';
   this.els.expandBtn.classList.remove('toggle-on');
+  this._col = 0; // fitMode itself is a sticky preference and survives
+  this._updateFitBtn();
   if (typeof updateDocFocus === 'function') updateDocFocus();
   this._find = null;
   this._findBoxes = null;
@@ -2018,7 +2084,7 @@ var recViewer = new DocViewer({
   nav: 'recDocNav', prev: 'recPgPrev', next: 'recPgNext', ind: 'recPgInd', jump: 'recPgJump',
   zoomIn: 'recZoomIn', zoomOut: 'recZoomOut', darkBtn: 'recDarkBtn', lockBtn: 'recLockBtn',
   thumbBtn: 'recThumbBtn', thumbStrip: 'recThumbStrip', expandBtn: 'recExpandBtn',
-  backBtn: 'recBackBtn', findInput: 'recFindInput', findInfo: 'recFindInfo'
+  backBtn: 'recBackBtn', findInput: 'recFindInput', findInfo: 'recFindInfo', fitBtn: 'recFitBtn'
 });
 var playViewer = new DocViewer({
   scroll: 'playDocScroll', placeholder: 'playDocPlaceholder', canvas: 'playDocCanvas',
@@ -2026,7 +2092,7 @@ var playViewer = new DocViewer({
   nav: 'playDocNav', prev: 'playPgPrev', next: 'playPgNext', ind: 'playPgInd', jump: 'playPgJump',
   zoomIn: 'playZoomIn', zoomOut: 'playZoomOut', darkBtn: 'playDarkBtn', lockBtn: 'playLockBtn',
   thumbBtn: 'playThumbBtn', thumbStrip: 'playThumbStrip', expandBtn: 'playExpandBtn',
-  backBtn: 'playBackBtn', findInput: 'playFindInput', findInfo: 'playFindInfo'
+  backBtn: 'playBackBtn', findInput: 'playFindInput', findInfo: 'playFindInfo', fitBtn: 'playFitBtn'
 });
 recViewer.timeFn = function () { return elapsedNow(); };
 playViewer.timeFn = function () { return $('player').currentTime; };
@@ -3653,7 +3719,7 @@ window.addEventListener('beforeunload', function (e) {
 var TOUR = [
   { e: '🎙️', t: 'Welcome to SmartBooty', b: 'Record your lecture, get a live transcript, and keep slides, handwriting, and notes all synced to the audio. Everything stays on <b>your</b> device - nothing is uploaded anywhere.' },
   { e: '📄', t: 'Before class', b: 'Tap <b>New recording</b>, attach the chapter PDF or slides, and tap <b>&#128193; Class</b> to file the lecture into your class folder (it remembers your last class). Hit <b>&#9679; Start recording</b> when the professor begins. The first time, your browser asks to use the microphone - tap <b>Allow</b>, then check the little green level bar next to the timer is moving.' },
-  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, <b>Expand</b> goes full-screen GoodNotes-style - banner and side panes step aside, the chapter fills the screen, and pinch zooms right where your fingers are (+/&#8722; fine-zooms too; <b>Shrink</b> brings the panes back), and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Professor jumping around the book? Type a word into <b>Find</b> and Enter jumps to its page (Enter again = next match); <b>&#8617;</b> hops back to where you were. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
+  { e: '✍️', t: 'During class', b: 'Write on the slides with your pen or Apple Pencil (fingers scroll, pencil writes). The three <b>favorite pens</b> at the front of the toolbar are one-tap: tap to grab one, <b>hold one down</b> to save your current pen there. Draw a rough circle, box, or line and <b>hold still a beat</b> - it snaps into a clean shape. <b>T Text</b> lets you tap the slide and type on it. <b>Pages</b> opens a thumbnail strip to jump around the deck, <b>Expand</b> goes full-screen GoodNotes-style with pinch zoom right where your fingers are, and <b>Fit</b> picks how a page shows: <b>Width</b>, <b>Page</b> (whole page, zero scrolling - easy to see where the professor is), or <b>Column</b> (one textbook column at a time, big readable text - swiping steps left column, right column, next page), and <b>&#128275; Lock</b> stops the slide drifting - side-swipes turn pages, and tall textbook pages still scroll up and down to read. Professor jumping around the book? Type a word into <b>Find</b> and Enter jumps to its page (Enter again = next match); <b>&#8617;</b> hops back to where you were. Type notes on the right - every line is stamped to the moment you wrote it - and when the professor says <b>&quot;this will be on the exam&quot;</b>, hit the gold <b>&#9733; On the exam</b> button.' },
   { e: '⚡', t: 'After class', b: 'Your recordings sort into <b>&#128193; class folders</b> on the home screen. Open one and hit play: the slides turn themselves, and <b>your handwriting reappears stroke by stroke at the exact moment you wrote it</b> - like watching yourself take the lecture again. Tap any timestamp to jump the audio there; <b>&#8630;15</b> replays the last 15 seconds. Quiz yourself with <b>&#9889; Recall</b>, and use <b>Copy study session</b> to paste the whole lecture to Claude (or any AI) for real drilling. Back up recordings you care about with <b>Back up</b>.' },
   { e: '🛡️', t: 'The fine print (please actually read this one)', b: '<b>1.</b> Check your school&#39;s policy on recording lectures, or just ask the professor once - most allow it for personal study.<br><b>2.</b> <span style="color:var(--red-text)"><b>NEVER record in clinical settings</b></span> - anywhere near patients is a privacy violation that can end a nursing career. Lectures only.<br><b>3.</b> Your recordings, notes, and ink stay on <b>this device</b> - nothing is uploaded. (Live transcription sends audio to your browser&#39;s built-in speech service while recording, like voice typing does.)<br><b>4.</b> Storage lives in this browser: <b>Back up</b> anything you cannot afford to lose.<br><b>5.</b> Something acting up? Tap <b>&#9888; Report a problem</b> on the home screen &mdash; it copies a little report to paste to whoever shared the app with you.' }
 ];
@@ -3704,7 +3770,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784668592486';
+var APP_VERSION = '1784671432395';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
