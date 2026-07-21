@@ -170,7 +170,8 @@
     min-width: 0; /* a zoomed canvas scrolls inside the pane instead of stretching it */
     max-width: 100%;
   }
-  .pane.doc { flex: 1.3 1 400px; }
+  .pane.doc { flex: 2.2 1 400px; } /* the document is the star */
+  .pane.notes { flex: 0.8 1 260px; } /* notes keep a slimmer column */
   .pane.doc.doczoomed { flex-basis: 100%; max-height: 86vh; }
   /* Expand = focus mode: banner and side panes get out of the way,
      the document fills the remaining screen height */
@@ -534,7 +535,7 @@
           </div>
         </div>
       </div>
-      <div class="pane">
+      <div class="pane notes">
         <div class="pane-head">
           <h2>My notes</h2>
           <button class="btn ghost tiny collapse-btn" data-key="recNotes">Hide</button>
@@ -636,7 +637,7 @@
           </div>
         </div>
       </div>
-      <div class="pane">
+      <div class="pane notes">
         <div class="pane-head">
           <h2>My notes</h2>
           <button class="btn ghost tiny collapse-btn" data-key="playNotes">Hide</button>
@@ -1988,11 +1989,11 @@ DocViewer.prototype.render = function () {
   if (!self.pdf) return Promise.resolve();
   var seq = ++self._renderSeq;
   self.updateInd();
-  // Expand (or zooming past 1x) gives the document the full row width;
-  // otherwise the normal three-pane layout returns
+  // Only Expand changes the layout. Zooming magnifies INSIDE the pane
+  // (the page scrolls within it), so the notes stay right where they are.
   var pane = self.els.scroll.parentElement;
   if (pane && pane.classList.contains('doc')) {
-    pane.classList.toggle('doczoomed', self.wide || self.zoom > 1.01);
+    pane.classList.toggle('doczoomed', self.wide);
   }
   self.els.scroll.classList.toggle('colmode', self.fitMode === 'col');
   return self.pdf.getPage(self.page).then(function (page) {
@@ -3070,6 +3071,46 @@ function buildStudyMarkdown(s) {
     lines.push('');
   }
 
+  // Handwriting IS emphasis: when she writes/highlights on a page mid-
+  // lecture, the professor was dwelling on that page at that moment.
+  var inkEvents = [];
+  Object.keys(s.ink || {}).forEach(function (k) {
+    var pg = parseInt(k.substring(1), 10);
+    (s.ink[k] || []).forEach(function (st) {
+      if (typeof st.t !== 'number' || st.t <= 0) return; // pre-class markup has no timing signal
+      inkEvents.push({ t: st.t, page: pg, tool: st.tool, text: st.text || null });
+    });
+  });
+  if (inkEvents.length) {
+    inkEvents.sort(function (a, b) { return a.t - b.t; });
+    lines.push('## Handwriting timeline (she marked THESE pages at THESE moments - treat as emphasis)');
+    lines.push('');
+    var cluster = null;
+    var flushCluster = function () {
+      if (!cluster) return;
+      var what = cluster.tool === 'hl' ? 'highlighted' : (cluster.tool === 'text' ? 'typed' : 'wrote');
+      var line = '- [' + fmt(cluster.t0) + '] p. ' + cluster.page + ' - ' + what;
+      if (cluster.tool !== 'text' && cluster.n > 1) {
+        line += ' (' + cluster.n + ' strokes' + (cluster.t1 - cluster.t0 > 2 ? ', until ' + fmt(cluster.t1) : '') + ')';
+      }
+      if (cluster.texts.length) line += ': "' + cluster.texts.join('" / "') + '"';
+      lines.push(line);
+      cluster = null;
+    };
+    inkEvents.forEach(function (ev) {
+      if (cluster && ev.page === cluster.page && ev.tool === cluster.tool && ev.t - cluster.t1 <= 45) {
+        cluster.n++;
+        cluster.t1 = ev.t;
+        if (ev.text) cluster.texts.push(ev.text);
+      } else {
+        flushCluster();
+        cluster = { page: ev.page, tool: ev.tool, t0: ev.t, t1: ev.t, n: 1, texts: ev.text ? [ev.text] : [] };
+      }
+    });
+    flushCluster();
+    lines.push('');
+  }
+
   lines.push('## My notes');
   lines.push('');
   if (s.notes && s.notes.length) {
@@ -3770,7 +3811,7 @@ function applyCompat() {
 }
 
 /* ================= PWA: offline shell + update banner ================= */
-var APP_VERSION = '1784671432395';
+var APP_VERSION = '1784672545572';
 try {
   if ('serviceWorker' in navigator &&
       (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
